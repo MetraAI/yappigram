@@ -1,0 +1,25 @@
+{
+  "name": "YappiGram",
+  "short_name": "YappiGram",
+  "description": "YappiGram — Telegram CRM",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0c1222",
+  "background_color": "#0c1222",
+  "start_url": "/chats",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

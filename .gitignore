@@ -1,0 +1,21 @@
+# Env
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.session
+
+# Sessions
+backend/sessions/
+
+# Node
+node_modules/
+.next/
+
+# Docker
+*.log
+
+# IDE
+.vscode/
+.idea/
