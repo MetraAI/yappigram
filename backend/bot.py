@@ -143,40 +143,41 @@ async def notify_new_message(
     staff_id = assigned_to
     acct_id = tg_account_id
 
+    # Collect target operators to notify
+    targets: list[Staff] = []
+
     async with async_session() as db:
         if staff_id:
             # Direct assignment
             result = await db.execute(
                 select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True))
             )
-            operator = result.scalar_one_or_none()
+            op = result.scalar_one_or_none()
+            if op:
+                targets.append(op)
         elif acct_id:
-            # Find operator via staff_tg_accounts link
+            # Find ALL operators via staff_tg_accounts link
             result = await db.execute(
                 select(Staff).join(StaffTgAccount, StaffTgAccount.staff_id == Staff.id)
                 .where(StaffTgAccount.tg_account_id == acct_id, Staff.is_active.is_(True))
             )
-            operator = result.scalar_one_or_none()
-            if operator:
-                print(f"[NOTIFY] Found operator {operator.tg_username} via tg_account for {contact.alias}")
-        else:
-            print(f"[NOTIFY] Contact {contact.alias} has no assigned operator and no tg_account, skipping")
-            return
+            targets = list(result.scalars().all())
+            if targets:
+                print(f"[NOTIFY] Found {len(targets)} operator(s) via tg_account for {contact.alias}")
 
-        if not operator:
-            print(f"[NOTIFY] No operator found for contact {contact.alias}")
-            return
+        # Fallback: notify admin if no operators found
+        if not targets and settings.TG_ADMIN_CHAT_ID:
+            result = await db.execute(
+                select(Staff).where(Staff.tg_user_id == settings.TG_ADMIN_CHAT_ID, Staff.is_active.is_(True))
+            )
+            admin = result.scalar_one_or_none()
+            if admin:
+                targets.append(admin)
+                print(f"[NOTIFY] Fallback: notifying admin for {contact.alias}")
 
-    if not operator.tg_user_id:
-        print(f"[NOTIFY] Operator has no tg_user_id for contact {contact.alias}")
+    if not targets:
+        print(f"[NOTIFY] No operators or admin found for contact {contact.alias}")
         return
-
-    # Skip if operator has CRM open (active WebSocket connection)
-    if ws_manager.is_online(operator.id):
-        print(f"[NOTIFY] Operator {operator.tg_user_id} is online in CRM, skipping")
-        return
-
-    print(f"[NOTIFY] Sending to operator {operator.tg_user_id} for contact {contact.alias}")
 
     preview = _esc((message_text or "[media]")[:100])
     alias = _esc(contact.alias)
@@ -194,12 +195,20 @@ async def notify_new_message(
         )],
     ])
 
-    try:
-        await get_bot().send_message(
-            operator.tg_user_id, text, parse_mode="HTML", reply_markup=keyboard,
-        )
-    except Exception as e:
-        print(f"[NOTIFY] Failed to notify {operator.tg_user_id}: {e}")
+    for operator in targets:
+        if not operator.tg_user_id:
+            continue
+        # Skip if operator has CRM open (active WebSocket connection)
+        if ws_manager.is_online(operator.id):
+            print(f"[NOTIFY] Operator {operator.tg_user_id} is online in CRM, skipping")
+            continue
+        print(f"[NOTIFY] Sending to operator {operator.tg_user_id} for contact {contact.alias}")
+        try:
+            await get_bot().send_message(
+                operator.tg_user_id, text, parse_mode="HTML", reply_markup=keyboard,
+            )
+        except Exception as e:
+            print(f"[NOTIFY] Failed to notify {operator.tg_user_id}: {e}")
 
 
 # ============================================================

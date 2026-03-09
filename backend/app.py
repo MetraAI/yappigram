@@ -803,7 +803,9 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
         while True:
             data = await ws.receive_text()
             # Handle typing indicators etc.
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
         ws_manager.disconnect(staff_id, ws)
 
 

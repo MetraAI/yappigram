@@ -24,11 +24,15 @@ class WSManager:
 
     async def send_to_staff(self, staff_id: UUID, event: dict):
         """Send event to all connections of a specific staff member."""
+        dead: list[WebSocket] = []
         for ws in self._connections.get(staff_id, []):
             try:
                 await ws.send_text(json.dumps(event, default=str))
             except Exception:
-                pass
+                dead.append(ws)
+        # Clean up dead connections
+        for ws in dead:
+            self.disconnect(staff_id, ws)
 
     async def broadcast_to_staff_list(self, staff_ids: list[UUID], event: dict):
         """Send event to multiple staff members."""
