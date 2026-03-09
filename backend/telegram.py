@@ -472,18 +472,32 @@ async def forward_message(
     tg_msg_ids: list[int],
     to_tg_id: int,
 ) -> list[int]:
-    """Forward messages natively via Telegram."""
+    """Copy messages to another chat without 'Forwarded from' header."""
     client = _clients.get(account_id)
     if not client:
         raise ValueError("Telegram account not connected")
-    result = await client.forward_messages(
-        entity=to_tg_id,
-        messages=tg_msg_ids,
-        from_peer=from_tg_id,
-    )
-    if isinstance(result, list):
-        return [r.id for r in result if r]
-    return [result.id] if result else []
+
+    sent_ids = []
+    for tg_msg_id in tg_msg_ids:
+        try:
+            # Get the original message
+            orig = await client.get_messages(from_tg_id, ids=tg_msg_id)
+            if not orig:
+                continue
+
+            # Re-send as new message (no forward header)
+            if orig.media:
+                result = await client.send_file(
+                    to_tg_id, orig.media, caption=orig.text or "",
+                )
+            elif orig.text:
+                result = await client.send_message(to_tg_id, orig.text)
+            else:
+                continue
+            sent_ids.append(result.id)
+        except Exception as e:
+            print(f"[FORWARD] Failed to copy message {tg_msg_id}: {e}")
+    return sent_ids
 
 
 async def press_inline_button(
