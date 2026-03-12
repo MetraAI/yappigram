@@ -64,22 +64,29 @@ function ChatsContent() {
   const [showAddMember, setShowAddMember] = useState(false);
   const [addingMember, setAddingMember] = useState(false);
 
-  // Unread tracking: set of contact IDs with unread messages
-  const [unread, setUnread] = useState<Set<string>>(new Set());
+  // Unread tracking: contact_id -> count
+  const [unread, setUnread] = useState<Map<string, number>>(new Map());
   const [notification, setNotification] = useState<{ alias: string; text: string } | null>(null);
 
   // Pinned chats (per-user)
   const [pinned, setPinned] = useState<Set<string>>(new Set());
 
+  // Scroll-to-bottom tracking
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+
+  // Fullscreen photo viewer
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<Contact | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { api("/api/pinned").then((ids: string[]) => setPinned(new Set(ids))).catch(console.error); }, []);
   useEffect(() => {
     api("/api/unread").then((data: Record<string, number>) => {
-      setUnread(new Set(Object.keys(data)));
+      setUnread(new Map(Object.entries(data)));
     }).catch(console.error);
   }, []);
   useEffect(() => { selectedRef.current = selected; }, [selected]);
@@ -107,8 +114,12 @@ function ChatsContent() {
           // Mark as read immediately since user is viewing this chat
           api(`/api/messages/${event.contact_id}/read`, { method: "PATCH" }).catch(console.error);
         } else {
-          // Mark as unread + show notification
-          setUnread((prev) => new Set(prev).add(event.contact_id));
+          // Mark as unread + increment count
+          setUnread((prev) => {
+            const next = new Map(prev);
+            next.set(event.contact_id, (next.get(event.contact_id) || 0) + 1);
+            return next;
+          });
           // Find contact alias for notification
           setContacts((prev) => {
             const contact = prev.find((c) => c.id === event.contact_id);
@@ -148,7 +159,7 @@ function ChatsContent() {
     setForwardMode(false);
     setForwardSelected(new Set());
     // Clear unread for this chat — persist to DB
-    setUnread((prev) => { const n = new Set(prev); n.delete(selected.id); return n; });
+    setUnread((prev) => { const n = new Map(prev); n.delete(selected.id); return n; });
     api(`/api/messages/${selected.id}/read`, { method: "PATCH" }).catch(console.error);
   }, [selected]);
 
@@ -166,7 +177,13 @@ function ChatsContent() {
   }, [selected]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    // Auto-scroll only if user is near the bottom (within 150px)
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    if (isNearBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
   // Auto-hide bot toast
@@ -177,9 +194,14 @@ function ChatsContent() {
   }, [botToast]);
 
   const sendMessage = async () => {
-    if (!text.trim() || !selected) return;
+    const content = text.trim();
+    if (!content || !selected) return;
+    // Clear input immediately for snappy UX
+    setText("");
+    setReplyTo(null);
+    if (inputRef.current) inputRef.current.style.height = "auto";
     try {
-      const body: any = { content: text };
+      const body: any = { content };
       if (replyTo) body.reply_to_msg_id = replyTo.id;
 
       const msg = await api(`/api/messages/${selected.id}/send`, {
@@ -187,8 +209,6 @@ function ChatsContent() {
         body: JSON.stringify(body),
       });
       setMessages((prev) => [...prev, msg]);
-      setText("");
-      setReplyTo(null);
     } catch (e: any) { alert(e.message); }
   };
 
@@ -364,7 +384,9 @@ function ChatsContent() {
                   )}
                   <span className={`font-medium text-sm truncate ${unread.has(c.id) ? "text-white" : ""}`}>{c.alias}</span>
                   {unread.has(c.id) && (
-                    <span className="w-2.5 h-2.5 rounded-full bg-brand shrink-0 animate-pulse" />
+                    <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-brand text-white text-[11px] font-bold flex items-center justify-center shrink-0">
+                      {unread.get(c.id)! > 99 ? "99+" : unread.get(c.id)}
+                    </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -584,7 +606,14 @@ function ChatsContent() {
             )}
 
             {/* Messages */}
-            <div className="flex-1 overflow-auto overflow-x-hidden p-4 space-y-2">
+            <div
+              ref={messagesContainerRef}
+              className="flex-1 overflow-auto overflow-x-hidden p-4 space-y-2 relative"
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                setShowScrollBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 300);
+              }}
+            >
               {messages.map((m) => {
                 const buttons = parseInlineButtons(m.inline_buttons);
                 return (
@@ -675,7 +704,12 @@ function ChatsContent() {
                         {m.media_type && m.media_path && (
                           <div className="mb-2">
                             {m.media_type === "photo" && (
-                              <img src={mediaUrl(m.media_path)} alt="" className="rounded-xl max-w-full max-h-64 object-cover" />
+                              <img
+                                src={mediaUrl(m.media_path)}
+                                alt=""
+                                className="rounded-xl max-w-full max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                                onClick={(e) => { e.stopPropagation(); setLightboxSrc(mediaUrl(m.media_path!)); }}
+                              />
                             )}
                             {m.media_type === "video" && (
                               <video src={mediaUrl(m.media_path)} controls className="rounded-xl max-w-full max-h-64" />
@@ -687,9 +721,12 @@ function ChatsContent() {
                               const ext = m.media_path!.split('.').pop()?.toLowerCase() || '';
                               const isImage = ['jpg','jpeg','png','gif','webp','bmp','svg'].includes(ext);
                               return isImage ? (
-                                <a href={mediaUrl(m.media_path)} target="_blank" rel="noreferrer">
-                                  <img src={mediaUrl(m.media_path)} alt="" className="rounded-xl max-w-full max-h-64 object-cover" />
-                                </a>
+                                <img
+                                  src={mediaUrl(m.media_path!)}
+                                  alt=""
+                                  className="rounded-xl max-w-full max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                                  onClick={(e) => { e.stopPropagation(); setLightboxSrc(mediaUrl(m.media_path!)); }}
+                                />
                               ) : (
                                 <a href={mediaUrl(m.media_path)} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-brand-light hover:underline">
                                   <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -754,6 +791,17 @@ function ChatsContent() {
                 );
               })}
               <div ref={messagesEndRef} />
+              {/* Scroll to bottom button */}
+              {showScrollBtn && (
+                <button
+                  onClick={() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })}
+                  className="sticky bottom-2 left-1/2 -translate-x-1/2 w-10 h-10 bg-surface-card border border-surface-border rounded-full flex items-center justify-center shadow-lg hover:bg-surface-hover transition-all z-10"
+                >
+                  <svg className="w-5 h-5 text-slate-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </button>
+              )}
             </div>
 
             {/* Reply strip */}
@@ -798,13 +846,25 @@ function ChatsContent() {
                     <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
                   </svg>
                 </button>
-                <input
+                <textarea
                   ref={inputRef}
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendMessage();
+                    }
+                  }}
                   placeholder="Type a message..."
-                  className="flex-1 bg-transparent py-3 text-sm focus:outline-none placeholder:text-slate-600"
+                  rows={1}
+                  className="flex-1 bg-transparent py-3 text-sm focus:outline-none placeholder:text-slate-600 resize-none max-h-32 overflow-y-auto"
+                  style={{ height: "auto" }}
+                  onInput={(e) => {
+                    const target = e.target as HTMLTextAreaElement;
+                    target.style.height = "auto";
+                    target.style.height = Math.min(target.scrollHeight, 128) + "px";
+                  }}
                 />
                 <button
                   onClick={sendMessage}
@@ -948,6 +1008,29 @@ function ChatsContent() {
         <div className="fixed bottom-20 left-1/2 -translate-x-1/2 bg-surface-card border border-brand/30 rounded-2xl px-4 py-3 shadow-lg animate-slide-up z-50 max-w-xs">
           <div className="text-xs text-brand font-medium mb-0.5">Bot response</div>
           <div className="text-sm text-white">{botToast}</div>
+        </div>
+      )}
+
+      {/* Fullscreen photo lightbox */}
+      {lightboxSrc && (
+        <div
+          className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] animate-fade-in"
+          onClick={() => setLightboxSrc(null)}
+        >
+          <button
+            onClick={() => setLightboxSrc(null)}
+            className="absolute top-4 right-4 text-white/70 hover:text-white transition-colors p-2"
+          >
+            <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+          <img
+            src={lightboxSrc}
+            alt=""
+            className="max-w-[95vw] max-h-[90vh] object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
         </div>
       )}
     </div>
