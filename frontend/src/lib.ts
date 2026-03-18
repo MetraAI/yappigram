@@ -292,6 +292,7 @@ export interface Contact {
 export interface Message {
   id: string;
   contact_id: string;
+  tg_message_id: number | null;
   direction: string;
   content: string | null;
   media_type: string | null;
