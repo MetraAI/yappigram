@@ -515,7 +515,7 @@ function ChatsContent() {
   const isGroup = selected?.chat_type === "group" || selected?.chat_type === "channel" || selected?.chat_type === "supergroup";
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden">
       {/* Contact list */}
       <div className={`w-full md:w-80 border-r border-surface-border flex flex-col bg-gradient-to-b from-surface-card/50 to-transparent ${selected ? "hidden md:flex" : ""}`}>
         <div className="p-4 border-b border-surface-border">
@@ -681,11 +681,11 @@ function ChatsContent() {
       </div>
 
       {/* Chat area */}
-      <div className={`flex-1 flex flex-col ${!selected ? "hidden md:flex" : ""}`}>
+      <div className={`flex-1 flex flex-col min-w-0 ${!selected ? "hidden md:flex" : ""}`}>
         {selected ? (
           <>
             {/* Header */}
-            <div className="px-4 py-3 border-b border-surface-border bg-surface-card/30 backdrop-blur-sm flex items-center gap-3">
+            <div className="px-3 py-2.5 border-b border-surface-border bg-surface-card/30 backdrop-blur-sm flex items-center gap-2 overflow-x-auto">
               <button onClick={() => setSelected(null)} className="md:hidden text-slate-400 hover:text-white transition-colors p-1">
                 <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="15 18 9 12 15 6" />
@@ -792,11 +792,11 @@ function ChatsContent() {
                 </button>
               )}
 
-              {/* Translation language selectors — incoming & outgoing */}
+              {/* Translation language selectors — hidden on mobile */}
               <select
                 value={translateLangIn}
                 onChange={(e) => setTranslateLangIn(e.target.value)}
-                className="px-2 py-1.5 rounded-xl border border-surface-border bg-surface-card text-xs text-slate-400 focus:outline-none focus:border-brand/30 cursor-pointer"
+                className="hidden md:block px-2 py-1.5 rounded-xl border border-surface-border bg-surface-card text-xs text-slate-400 focus:outline-none focus:border-brand/30 cursor-pointer shrink-0"
                 title="Перевод входящих"
               >
                 <option value="ru">📥 RU</option>
@@ -815,7 +815,7 @@ function ChatsContent() {
               <select
                 value={translateLangOut}
                 onChange={(e) => setTranslateLangOut(e.target.value)}
-                className="px-2 py-1.5 rounded-xl border border-surface-border bg-surface-card text-xs text-slate-400 focus:outline-none focus:border-brand/30 cursor-pointer"
+                className="hidden md:block px-2 py-1.5 rounded-xl border border-surface-border bg-surface-card text-xs text-slate-400 focus:outline-none focus:border-brand/30 cursor-pointer shrink-0"
                 title="Перевод исходящих"
               >
                 <option value="en">📤 EN</option>
@@ -984,17 +984,6 @@ function ChatsContent() {
                             : "bg-surface-card border border-surface-border text-white rounded-bl-md"
                         }`}
                       >
-                        {/* Forwarded from banner */}
-                        {m.forwarded_from_alias && (
-                          <div className="flex items-center gap-1.5 mb-1.5 text-xs opacity-60 italic">
-                            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="15 17 20 12 15 7" />
-                              <path d="M4 18v-2a4 4 0 0 1 4-4h12" />
-                            </svg>
-                            Forwarded from {m.forwarded_from_alias}
-                          </div>
-                        )}
-
                         {/* Reply quote */}
                         {m.reply_to_content_preview && (
                           <div

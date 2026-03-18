@@ -365,7 +365,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                             alias=generate_alias(group_title, seq),
                             chat_type=chat_type,
                             is_forum=is_forum,
-                            status="approved",
+                            status="pending",
                         )
                     else:
                         contact = Contact(
@@ -375,7 +375,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                             real_username_encrypted=encrypt(username) if username else None,
                             alias=generate_alias(first_name, seq),
                             chat_type="private",
-                            status="approved",
+                            status="pending",
                         )
                     db.add(contact)
                     try:
