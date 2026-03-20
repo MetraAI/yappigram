@@ -103,8 +103,8 @@ def _org_id(user: Staff) -> str | None:
 
 
 def _org_accounts_subq(user: Staff):
-    """Subquery: TgAccount IDs belonging to user's org."""
-    return select(TgAccount.id).where(TgAccount.org_id == _org_id(user))
+    """Subquery: TgAccount IDs belonging to user's org (active only)."""
+    return select(TgAccount.id).where(TgAccount.org_id == _org_id(user), TgAccount.is_active.is_(True))
 
 
 # ============================================================
