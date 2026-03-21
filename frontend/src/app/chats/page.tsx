@@ -529,6 +529,10 @@ function ChatsContent() {
       setForwardSelected(new Set());
       setShowForwardPicker(false);
       setForwardMediaOnly(false);
+      // Move target contact to top of list (update last_message_at)
+      setContacts((prev) => prev.map((c) =>
+        c.id === toContactId ? { ...c, last_message_at: new Date().toISOString() } : c
+      ));
     } catch (e: any) { alert(e.message); }
   };
 

@@ -138,6 +138,8 @@ async def on_startup():
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS org_id VARCHAR;
                 -- Tags: tg_account_id
                 ALTER TABLE tags ADD COLUMN IF NOT EXISTS tg_account_id UUID REFERENCES tg_accounts(id);
+                -- Pinned chats: org_id for org-wide pins
+                ALTER TABLE pinned_chats ADD COLUMN IF NOT EXISTS org_id VARCHAR;
                 -- TG accounts: show_real_names, display_name
                 ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS show_real_names BOOLEAN DEFAULT false;
                 ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS display_name VARCHAR;
@@ -638,12 +640,11 @@ async def list_contacts(
     result = await db.execute(query)
     contacts = list(result.scalars().all())
 
-    # Always show real titles for groups/channels/supergroups
-    # For private contacts, show real names only if show_real_names is enabled for this org
-    admin_result = await db.execute(
-        select(Staff).where(Staff.postforge_org_id == _org_id(user), Staff.show_real_names.is_(True)).limit(1)
+    # Build per-account show_real_names map
+    acct_result = await db.execute(
+        select(TgAccount.id, TgAccount.show_real_names).where(TgAccount.org_id == _org_id(user))
     )
-    show_real = admin_result.scalar_one_or_none() is not None
+    show_real_map = {row[0]: row[1] for row in acct_result.all()}
 
     for c in contacts:
         if c.chat_type != "private":
@@ -651,7 +652,7 @@ async def list_contacts(
             title = decrypt(c.group_title_encrypted) if c.group_title_encrypted else None
             if title:
                 c.alias = title
-        elif show_real:
+        elif show_real_map.get(c.tg_account_id, False):
             real_name = decrypt(c.real_name_encrypted) if c.real_name_encrypted else None
             if real_name:
                 c.alias = real_name
@@ -668,11 +669,10 @@ async def get_contact(contact_id: UUID, user: CurrentUser, db: DB):
         title = decrypt(contact.group_title_encrypted) if contact.group_title_encrypted else None
         if title:
             contact.alias = title
-    else:
-        admin_result = await db.execute(
-            select(Staff).where(Staff.postforge_org_id == _org_id(user), Staff.show_real_names.is_(True)).limit(1)
-        )
-        if admin_result.scalar_one_or_none() is not None:
+    elif contact.tg_account_id:
+        acct = await db.execute(select(TgAccount.show_real_names).where(TgAccount.id == contact.tg_account_id))
+        show_real = acct.scalar_one_or_none()
+        if show_real:
             real_name = decrypt(contact.real_name_encrypted) if contact.real_name_encrypted else None
             if real_name:
                 contact.alias = real_name
@@ -764,28 +764,31 @@ async def delete_contact(contact_id: UUID, user: AdminUser, db: DB):
 
 @app.get("/api/pinned")
 async def get_pinned(user: Annotated[Staff, Depends(get_current_user)], db: DB):
+    org = _org_id(user)
     result = await db.execute(
-        select(PinnedChat.contact_id).where(PinnedChat.staff_id == user.id)
+        select(PinnedChat.contact_id).where(PinnedChat.org_id == org)
     )
     return [str(row[0]) for row in result.all()]
 
 
 @app.post("/api/pinned/{contact_id}", status_code=204)
 async def pin_chat(contact_id: UUID, user: Annotated[Staff, Depends(get_current_user)], db: DB):
+    org = _org_id(user)
     existing = await db.execute(
-        select(PinnedChat).where(PinnedChat.staff_id == user.id, PinnedChat.contact_id == contact_id)
+        select(PinnedChat).where(PinnedChat.org_id == org, PinnedChat.contact_id == contact_id)
     )
     if existing.scalar_one_or_none():
         return
-    db.add(PinnedChat(staff_id=user.id, contact_id=contact_id))
+    db.add(PinnedChat(staff_id=user.id, contact_id=contact_id, org_id=org))
     await db.commit()
 
 
 @app.delete("/api/pinned/{contact_id}", status_code=204)
 async def unpin_chat(contact_id: UUID, user: Annotated[Staff, Depends(get_current_user)], db: DB):
     from sqlalchemy import delete as sa_delete
+    org = _org_id(user)
     await db.execute(
-        sa_delete(PinnedChat).where(PinnedChat.staff_id == user.id, PinnedChat.contact_id == contact_id)
+        sa_delete(PinnedChat).where(PinnedChat.org_id == org, PinnedChat.contact_id == contact_id)
     )
     await db.commit()
 
@@ -2391,11 +2394,25 @@ async def get_crm_settings(user: CurrentUser, db: DB):
 
 
 @app.patch("/api/settings/crm")
-async def update_crm_settings(user: AdminUser, db: DB, show_real_names: bool = Query(...)):
-    """Update CRM settings for current org. Sets for ALL staff in this org."""
-    await db.execute(
-        sa_update(Staff).where(Staff.postforge_org_id == _org_id(user)).values(show_real_names=show_real_names)
-    )
+async def update_crm_settings(
+    user: AdminUser, db: DB,
+    show_real_names: bool = Query(...),
+    tg_account_id: UUID | None = Query(None),
+):
+    """Update CRM settings. If tg_account_id given, set per-account; else set for all staff globally."""
+    if tg_account_id:
+        await db.execute(
+            sa_update(TgAccount).where(
+                TgAccount.id == tg_account_id, TgAccount.org_id == _org_id(user)
+            ).values(show_real_names=show_real_names)
+        )
+    else:
+        await db.execute(
+            sa_update(Staff).where(Staff.postforge_org_id == _org_id(user)).values(show_real_names=show_real_names)
+        )
+        await db.execute(
+            sa_update(TgAccount).where(TgAccount.org_id == _org_id(user)).values(show_real_names=show_real_names)
+        )
     await db.commit()
     return {"show_real_names": show_real_names}
 

@@ -182,12 +182,13 @@ class StaffTgAccount(Base):
 
 
 class PinnedChat(Base):
-    """Per-user pinned chats."""
+    """Org-wide pinned chats (shared across all staff in same workspace)."""
     __tablename__ = "pinned_chats"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     staff_id = Column(UUID(as_uuid=True), ForeignKey("staff.id"), nullable=False)
     contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=False)
+    org_id = Column(String, nullable=True, index=True)
     pinned_at = Column(DateTime, default=func.now())
 
 
