@@ -198,9 +198,8 @@ function TagsSection() {
 
   useEffect(() => {
     api("/api/tags").then(setTags).catch(console.error);
-    fetchTgStatus().then((res) => {
-      const accs = Array.isArray(res) ? res : (res.accounts || []);
-      setAccounts(accs.filter((a: any) => a.connected !== false && a.is_active !== false).map((a: any) => ({ id: a.id, phone: a.phone })));
+    fetchTgStatus().then((accs) => {
+      setAccounts(accs.filter((a) => a.is_active !== false).map((a) => ({ id: a.id, phone: a.phone })));
     }).catch(() => {});
   }, []);
 
@@ -502,9 +501,8 @@ function AdminSettingsSection() {
   const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchTgStatus().then((res) => {
-      const accs = Array.isArray(res) ? res : (res.accounts || []);
-      setAccounts(accs.filter((a: any) => a.connected !== false && a.is_active !== false));
+    fetchTgStatus().then((accs) => {
+      setAccounts(accs.filter((a) => a.is_active !== false));
     }).catch(console.error);
   }, []);
 

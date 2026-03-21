@@ -156,8 +156,7 @@ function ChatsContent() {
 
   // Fetch TG accounts for switcher
   useEffect(() => {
-    fetchTgStatus().then((res) => {
-      const accs = Array.isArray(res) ? res : (res.accounts || []);
+    fetchTgStatus().then((accs) => {
       setAccountsList(accs);
     }).catch(console.error);
   }, []);
@@ -635,7 +634,7 @@ function ChatsContent() {
               >
                 Все
               </button>
-              {accountsList.filter(a => a.connected).map((acc) => (
+              {accountsList.map((acc) => (
                 <button
                   key={acc.id}
                   onClick={() => switchAccount(acc.id)}

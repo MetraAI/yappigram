@@ -429,8 +429,9 @@ export interface TgStatusAccount {
   show_real_names: boolean;
 }
 
-export async function fetchTgStatus(): Promise<{ accounts: TgStatusAccount[] }> {
-  return api("/api/tg/status");
+export async function fetchTgStatus(): Promise<TgStatusAccount[]> {
+  const res = await api("/api/tg/status");
+  return Array.isArray(res) ? res : (res.accounts || []);
 }
 
 export interface TgAccount {

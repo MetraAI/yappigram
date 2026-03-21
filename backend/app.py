@@ -548,8 +548,16 @@ async def tg_verify(req: TgVerifyRequest, user: CurrentUser, db: DB):
 
 @app.get("/api/tg/status", response_model=list[TgAccountOut])
 async def tg_status(user: CurrentUser, db: DB):
+    from telegram import _clients
     result = await db.execute(select(TgAccount).where(TgAccount.org_id == _org_id(user)))
-    return result.scalars().all()
+    accounts = result.scalars().all()
+    out = []
+    for acc in accounts:
+        d = TgAccountOut.model_validate(acc)
+        client = _clients.get(acc.id)
+        d.connected = bool(client and client.is_connected())
+        out.append(d)
+    return out
 
 
 @app.delete("/api/tg/disconnect/{account_id}")

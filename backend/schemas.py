@@ -156,6 +156,8 @@ class TgAccountOut(BaseModel):
     phone: str
     is_active: bool
     connected_at: datetime
+    show_real_names: bool = False
+    connected: bool = False
 
     model_config = {"from_attributes": True}
 
