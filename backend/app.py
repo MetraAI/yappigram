@@ -3,24 +3,40 @@
 import asyncio
 import os
 import secrets
+import time
 import uuid as uuid_mod
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import UUID
 
 # Allowed file extensions for uploads (security whitelist)
 ALLOWED_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg",  # images
-    ".mp4", ".mov", ".avi", ".mkv", ".webm",  # video
-    ".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac",  # audio
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",  # docs
-    ".txt", ".csv", ".json", ".xml", ".zip", ".rar", ".7z",  # other safe
+    ".jpg", ".jpeg", ".png", ".gif", ".webp",  # images (no .svg — XSS risk)
+    ".mp4", ".mov", ".avi",  # video
+    ".ogg", ".mp3", ".wav",  # audio
+    ".pdf", ".doc", ".docx",  # docs
 }
+
+# Dangerous extensions that must never be uploaded
+BLOCKED_EXTENSIONS = {
+    ".html", ".htm", ".svg", ".js", ".php", ".py", ".sh",
+    ".bat", ".exe", ".cmd", ".ps1", ".msi", ".scr", ".com",
+}
+
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 
 
 def _validate_upload(file: "UploadFile") -> None:
     """Validate uploaded file extension and content type for security."""
-    ext = os.path.splitext(file.filename or "")[1].lower()
+    # Strip path separators from filename to prevent path traversal
+    safe_name = os.path.basename(file.filename or "")
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext in BLOCKED_EXTENSIONS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"File type '{ext}' not allowed",
+        )
     if ext and ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -29,11 +45,12 @@ def _validate_upload(file: "UploadFile") -> None:
     ct = (file.content_type or "").lower()
     # Block executable content types
     blocked_ct = {"application/x-executable", "application/x-msdos-program",
-                  "application/x-sh", "application/x-shellscript", "application/x-bat"}
+                  "application/x-sh", "application/x-shellscript", "application/x-bat",
+                  "text/html", "application/javascript", "image/svg+xml"}
     if ct in blocked_ct:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Executable files not allowed")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "File type not allowed")
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete as sa_delete, func, select, text as sa_text, update as sa_update
@@ -103,6 +120,19 @@ from ws import ws_manager
 MEDIA_DIR = "media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
+# --- Rate limiting for auth endpoints ---
+_rate_limits: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT_WINDOW = 60  # seconds
+RATE_LIMIT_MAX = 10
+
+
+def check_rate_limit(ip: str):
+    now = time.time()
+    _rate_limits[ip] = [t for t in _rate_limits[ip] if now - t < RATE_LIMIT_WINDOW]
+    if len(_rate_limits[ip]) >= RATE_LIMIT_MAX:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
+    _rate_limits[ip].append(now)
+
 app = FastAPI(title="YappiGram", version="1.0.0")
 
 app.add_middleware(
@@ -113,8 +143,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve uploaded/downloaded media files
-app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+# Media files served via custom endpoint with security headers
+import mimetypes
+
+@app.get("/media/{file_path:path}")
+async def serve_media(file_path: str):
+    """Serve media files with security headers."""
+    from fastapi.responses import FileResponse
+    # Prevent path traversal
+    safe_path = os.path.join(MEDIA_DIR, file_path)
+    safe_path = os.path.abspath(safe_path)
+    if not safe_path.startswith(os.path.abspath(MEDIA_DIR)):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid path")
+    if not os.path.isfile(safe_path):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    ext = os.path.splitext(safe_path)[1].lower()
+    # Never serve HTML or SVG with native content-type
+    if ext in (".html", ".htm", ".svg"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "File type not allowed")
+
+    content_type = mimetypes.guess_type(safe_path)[0] or "application/octet-stream"
+    # Override dangerous content types
+    if content_type in ("text/html", "image/svg+xml", "application/javascript"):
+        content_type = "application/octet-stream"
+
+    # Images served inline, everything else as attachment
+    is_image = content_type.startswith("image/")
+    disposition = "inline" if is_image else "attachment"
+    filename = os.path.basename(safe_path)
+
+    return FileResponse(
+        safe_path,
+        media_type=content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+        },
+    )
+
 
 # Type aliases for common dependencies
 DB = Annotated[AsyncSession, Depends(get_db)]
@@ -239,12 +306,13 @@ async def on_shutdown():
 # ============================================================
 
 @app.post("/api/auth/tg")
-async def tg_auth(req: TgAuthRequest, db: DB):
+async def tg_auth(req: TgAuthRequest, request: Request, db: DB):
     """Authenticate via Telegram Mini App initData.
 
     Returns tokens directly if user has one workspace,
     or a list of workspaces to choose from if multiple.
     """
+    check_rate_limit(request.client.host if request.client else "unknown")
     tg_user = validate_tg_init_data(req.init_data)
     tg_id = tg_user.get("id")
     if not tg_id:
@@ -424,7 +492,8 @@ async def tg_auth_select(req: TgWorkspaceSelect, db: DB):
 
 
 @app.post("/api/auth/refresh", response_model=TokenResponse)
-async def refresh(req: RefreshRequest, db: DB):
+async def refresh(req: RefreshRequest, request: Request, db: DB):
+    check_rate_limit(request.client.host if request.client else "unknown")
     payload = decode_token(req.refresh_token)
     if payload.get("type") != "refresh":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token type")
@@ -442,12 +511,13 @@ async def refresh(req: RefreshRequest, db: DB):
 
 
 @app.post("/api/auth/sso", response_model=TokenResponse)
-async def sso_auth(req: SsoAuthRequest, db: DB):
+async def sso_auth(req: SsoAuthRequest, request: Request, db: DB):
     """Authenticate via PostForge SSO token.
 
     Verifies the token against PostForge API, auto-creates Staff if needed.
     Used when CRM is embedded inside PostForge (iframe) or opened from PostForge.
     """
+    check_rate_limit(request.client.host if request.client else "unknown")
     import httpx
 
     if not settings.POSTFORGE_API_URL:
@@ -464,7 +534,9 @@ async def sso_auth(req: SsoAuthRequest, db: DB):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid PostForge token")
         pf_user = resp.json()
     except httpx.RequestError as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Cannot reach PostForge: {e}")
+        import logging
+        logging.getLogger(__name__).error(f"Cannot reach PostForge: {e}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Cannot reach PostForge")
 
     pf_user_id = str(pf_user.get("id"))
     pf_email = pf_user.get("email", "")
@@ -549,7 +621,8 @@ async def sso_auth(req: SsoAuthRequest, db: DB):
 MAX_TG_ACCOUNTS = 5  # test version limit
 
 @app.post("/api/tg/connect")
-async def tg_connect(req: TgConnectRequest, user: AdminUser, db: DB):
+async def tg_connect(req: TgConnectRequest, request: Request, user: AdminUser, db: DB):
+    check_rate_limit(request.client.host if request.client else "unknown")
     # Check account limit
     count = await db.execute(
         select(func.count(TgAccount.id)).where(TgAccount.org_id == _org_id(user))
@@ -636,6 +709,8 @@ async def list_contacts(
     assigned_to: UUID | None = None,
     tag: str | None = None,
     tg_account_id: UUID | None = None,
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     query = select(Contact)
 
@@ -662,6 +737,7 @@ async def list_contacts(
         query = query.where(Contact.tags.any(tag))
 
     query = query.order_by(Contact.last_message_at.desc().nullslast())
+    query = query.offset(offset).limit(limit)
     result = await db.execute(query)
     contacts = list(result.scalars().all())
 
@@ -821,10 +897,7 @@ async def unpin_chat(contact_id: UUID, user: Annotated[Staff, Depends(get_curren
 @app.get("/api/contacts/{contact_id}/reveal", response_model=ContactReveal)
 async def reveal_contact(contact_id: UUID, user: AdminUser, db: DB):
     """Reveal real client data. Logged in audit."""
-    result = await db.execute(select(Contact).where(Contact.id == contact_id))
-    contact = result.scalar_one_or_none()
-    if not contact:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    contact = await _get_contact_with_access(contact_id, user, db)
 
     # Audit log
     db.add(AuditLog(staff_id=user.id, action="reveal_data", target_contact_id=contact.id))
@@ -894,7 +967,9 @@ async def add_member_endpoint(contact_id: UUID, req: dict, user: AdminUser, db: 
     try:
         await add_group_member(group.tg_account_id, group.real_tg_id, str(member.real_tg_id))
     except Exception as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        import logging
+        logging.getLogger(__name__).error(f"Failed to add group member: {e}")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Failed to add member to group")
 
     return {"ok": True}
 
@@ -1211,6 +1286,9 @@ async def send_media(
     ext = os.path.splitext(file.filename or "")[1] or ""
     filename = f"{uuid_mod.uuid4()}{ext}"
     filepath = os.path.join(MEDIA_DIR, filename)
+    filepath = os.path.abspath(filepath)
+    if not filepath.startswith(os.path.abspath(MEDIA_DIR)):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid filename")
     data = await file.read()
     MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
     if len(data) > MAX_UPLOAD_SIZE:
@@ -1431,7 +1509,7 @@ async def list_staff(user: CurrentUser, db: DB):
 
 @app.post("/api/staff/invite", response_model=BotInviteOut)
 async def create_invite(req: BotInviteCreate, user: AdminUser, db: DB):
-    code = secrets.token_urlsafe(6)[:8]
+    code = secrets.token_urlsafe(16)[:20]
     invite = BotInvite(
         code=code,
         role=req.role,
@@ -1638,9 +1716,12 @@ async def template_upload_media(
     if not tpl:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
-    ext = os.path.splitext(file.filename or "")[1].lower()
+    ext = os.path.splitext(os.path.basename(file.filename or ""))[1].lower()
     filename = f"template_{template_id}{ext}"
     filepath = os.path.join(MEDIA_DIR, filename)
+    filepath = os.path.abspath(filepath)
+    if not filepath.startswith(os.path.abspath(MEDIA_DIR)):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid filename")
 
     content = await file.read()
     MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
@@ -1737,7 +1818,19 @@ async def get_contact_avatar(contact_id: UUID, db: DB, token: str = Query("")):
     if payload.get("type") != "access":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
-    result = await db.execute(select(Contact).where(Contact.id == contact_id))
+    # Verify contact belongs to user's org
+    staff_id = payload.get("sub")
+    staff_result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True)))
+    staff_user = staff_result.scalar_one_or_none()
+    if not staff_user:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+
+    result = await db.execute(
+        select(Contact).where(
+            Contact.id == contact_id,
+            Contact.tg_account_id.in_(_org_accounts_subq(staff_user)),
+        )
+    )
     contact = result.scalar_one_or_none()
     if not contact:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -1801,7 +1894,9 @@ async def edit_message(contact_id: UUID, message_id: UUID, req: SendMessage, use
         await client.edit_message(contact.real_tg_id, msg.tg_message_id, req.content)
     except Exception as e:
         if "not modified" not in str(e).lower():
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Edit failed: {e}")
+            import logging
+            logging.getLogger(__name__).error(f"Edit failed: {e}")
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Edit failed")
         # Content unchanged — just save locally without error
 
     # Save edit history before updating
@@ -1861,7 +1956,9 @@ async def translate_text(req: TranslateRequest, user: CurrentUser):
                 detected_lang = data[2] if len(data) > 2 else "unknown"
                 return {"translated": translated, "detected_lang": detected_lang}
     except Exception as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Translation failed: {e}")
+        import logging
+        logging.getLogger(__name__).error(f"Translation failed: {e}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Translation failed")
     raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Translation service unavailable")
 
 
@@ -1909,9 +2006,12 @@ async def broadcast_upload_media(
     if not bc:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
-    ext = os.path.splitext(file.filename or "")[1].lower()
+    ext = os.path.splitext(os.path.basename(file.filename or ""))[1].lower()
     filename = f"broadcast_{broadcast_id}{ext}"
     filepath = os.path.join(MEDIA_DIR, filename)
+    filepath = os.path.abspath(filepath)
+    if not filepath.startswith(os.path.abspath(MEDIA_DIR)):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid filename")
 
     content = await file.read()
     MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
@@ -1987,9 +2087,11 @@ async def start_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
     import random as _random
     if bc.contact_ids:
         # Manual selection — use specified contacts (private only)
+        # Validate all contact_ids belong to user's org
         result = await db.execute(
             select(Contact).where(
                 Contact.id.in_(bc.contact_ids),
+                Contact.tg_account_id.in_(_org_accounts_subq(user)),
                 Contact.tg_account_id == bc.tg_account_id,
                 Contact.status == "approved",
                 Contact.chat_type == "private",

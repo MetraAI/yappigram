@@ -1314,7 +1314,12 @@ function ChatsContent() {
                                     key={bi}
                                     onClick={() => {
                                       if (btn.url) {
-                                        window.open(btn.url, "_blank");
+                                        try {
+                                          const u = new URL(btn.url, window.location.href);
+                                          if (u.protocol === "http:" || u.protocol === "https:") {
+                                            window.open(btn.url, "_blank", "noopener,noreferrer");
+                                          }
+                                        } catch {}
                                       } else if (btn.callback_data) {
                                         handlePressButton(m.id, btn.callback_data);
                                       } else if (btn.send_text && selected) {

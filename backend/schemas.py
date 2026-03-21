@@ -167,8 +167,8 @@ class TgAccountOut(BaseModel):
 # --- Tags ---
 
 class TagCreate(BaseModel):
-    name: str
-    color: str = "#6366f1"
+    name: str = Field(..., max_length=50)
+    color: str = Field("#6366f1", max_length=20)
     tg_account_id: UUID | None = None
 
 class TagOut(BaseModel):
@@ -193,9 +193,9 @@ class MessageEditHistoryOut(BaseModel):
 # --- Contact extended ---
 
 class ContactUpdate(BaseModel):
-    alias: str | None = None
+    alias: str | None = Field(None, max_length=200)
     tags: list[str] | None = None
-    notes: str | None = None
+    notes: str | None = Field(None, max_length=5000)
     assigned_to: UUID | None = None
     is_archived: bool | None = None
 
@@ -203,17 +203,17 @@ class ContactUpdate(BaseModel):
 # --- Templates ---
 
 class TemplateCreate(BaseModel):
-    title: str
-    content: str
-    category: str | None = None
-    shortcut: str | None = None
+    title: str = Field(..., max_length=200)
+    content: str = Field(..., max_length=10000)
+    category: str | None = Field(None, max_length=100)
+    shortcut: str | None = Field(None, max_length=50)
     tg_account_id: UUID | None = None
 
 class TemplateUpdate(BaseModel):
-    title: str | None = None
-    content: str | None = None
-    category: str | None = None
-    shortcut: str | None = None
+    title: str | None = Field(None, max_length=200)
+    content: str | None = Field(None, max_length=10000)
+    category: str | None = Field(None, max_length=100)
+    shortcut: str | None = Field(None, max_length=50)
 
 class TemplateOut(BaseModel):
     id: UUID
@@ -234,8 +234,8 @@ class TemplateOut(BaseModel):
 # --- Broadcasts ---
 
 class BroadcastCreate(BaseModel):
-    title: str
-    content: str | None = None
+    title: str = Field(..., max_length=200)
+    content: str | None = Field(None, max_length=10000)
     tg_account_id: UUID
     tag_filter: list[str] = []
     delay_seconds: int = 1
