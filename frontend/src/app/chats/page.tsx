@@ -8,9 +8,13 @@ import {
   connectWS,
   createGroup,
   editMessage,
+  fetchContacts,
+  fetchEditHistory,
+  fetchTemplates,
+  fetchTgStatus,
+  fetchUnread,
   forwardMessages,
   getRole,
-  getTemplates,
   mediaUrl,
   onWSEvent,
   isKeyboardHidden,
@@ -20,10 +24,12 @@ import {
   unarchiveContact,
   uploadMedia,
   type Contact,
+  type EditHistoryEntry,
   type Message,
   type Tag,
   type Template,
   type TgAccount,
+  type TgStatusAccount,
 } from "@/lib";
 import { AppShell, AuthGuard, Badge, Button } from "@/components";
 
@@ -111,6 +117,18 @@ function ChatsContent() {
   const [editingMsg, setEditingMsg] = useState<Message | null>(null);
   const [editText, setEditText] = useState("");
 
+  // Edit history popup
+  const [editHistoryMsg, setEditHistoryMsg] = useState<{ contactId: string; messageId: string } | null>(null);
+  const [editHistory, setEditHistory] = useState<EditHistoryEntry[]>([]);
+  const [loadingEditHistory, setLoadingEditHistory] = useState(false);
+
+  // Account switcher
+  const [accountsList, setAccountsList] = useState<TgStatusAccount[]>([]);
+  const [filterAccountId, setFilterAccountId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return sessionStorage.getItem("crm_selected_account") || null;
+  });
+
   // Forum topics
   const [topics, setTopics] = useState<{ id: number; name: string }[]>([]);
   const [activeTopic, setActiveTopic] = useState<number | null>(null);
@@ -124,25 +142,47 @@ function ChatsContent() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<Contact | null>(null);
+  const filterAccountRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { api("/api/pinned").then((ids: string[]) => setPinned(new Set(ids))).catch(console.error); }, []);
-  useEffect(() => {
-    api("/api/unread").then((data: Record<string, number>) => {
-      setUnread(new Map(Object.entries(data)));
-    }).catch(console.error);
-  }, []);
   // Sync role from server (in case localStorage is stale)
   useEffect(() => {
     api("/api/staff/me").then((me: any) => { if (me?.role) setRole(me.role); }).catch(() => {});
   }, []);
   useEffect(() => { selectedRef.current = selected; }, [selected]);
-  useEffect(() => { api("/api/tags").then(setAllTags).catch(console.error); }, []);
-  useEffect(() => { getTemplates().then(setTemplates).catch(console.error); }, []);
+  useEffect(() => { filterAccountRef.current = filterAccountId; }, [filterAccountId]);
+
+  // Fetch TG accounts for switcher
+  useEffect(() => {
+    fetchTgStatus().then((res) => {
+      const accs = Array.isArray(res) ? res : (res.accounts || []);
+      setAccountsList(accs);
+    }).catch(console.error);
+  }, []);
+
+  // Account-aware data fetching
+  useEffect(() => {
+    const acctId = filterAccountId || undefined;
+    fetchUnread(acctId).then((data) => {
+      setUnread(new Map(Object.entries(data)));
+    }).catch(console.error);
+  }, [filterAccountId]);
 
   useEffect(() => {
-    api("/api/contacts?status=approved").then((data: Contact[]) =>
+    const acctId = filterAccountId || undefined;
+    api(`/api/tags${acctId ? `?tg_account_id=${acctId}` : ""}`).then(setAllTags).catch(console.error);
+  }, [filterAccountId]);
+
+  useEffect(() => {
+    const acctId = filterAccountId || undefined;
+    fetchTemplates(acctId).then(setTemplates).catch(console.error);
+  }, [filterAccountId]);
+
+  useEffect(() => {
+    const acctId = filterAccountId || undefined;
+    fetchContacts("approved", acctId).then((data: Contact[]) =>
       setContacts(data.sort((a, b) => (b.last_message_at || "").localeCompare(a.last_message_at || "")))
     ).catch(console.error);
     connectWS();
@@ -154,7 +194,7 @@ function ChatsContent() {
           const exists = prev.some((c) => c.id === event.contact_id);
           if (!exists) {
             // New contact — fetch full contact list to get the new one
-            api("/api/contacts?status=approved").then((data: Contact[]) =>
+            fetchContacts("approved", filterAccountRef.current || undefined).then((data: Contact[]) =>
               setContacts(data.sort((a, b) => (b.last_message_at || "").localeCompare(a.last_message_at || "")))
             ).catch(console.error);
             return prev;
@@ -401,6 +441,29 @@ function ChatsContent() {
     } catch (e: any) { alert(e.message); }
   };
 
+  const switchAccount = (accountId: string | null) => {
+    setFilterAccountId(accountId);
+    if (accountId) {
+      sessionStorage.setItem("crm_selected_account", accountId);
+    } else {
+      sessionStorage.removeItem("crm_selected_account");
+    }
+    setSelected(null);
+    setMessages([]);
+  };
+
+  const showEditHistory = async (contactId: string, messageId: string) => {
+    setEditHistoryMsg({ contactId, messageId });
+    setLoadingEditHistory(true);
+    try {
+      const history = await fetchEditHistory(contactId, messageId);
+      setEditHistory(history);
+    } catch (e: any) {
+      setEditHistory([]);
+    }
+    setLoadingEditHistory(false);
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selected || sending) return;
@@ -544,7 +607,8 @@ function ChatsContent() {
               <button
                 onClick={() => {
                   setShowCreateGroup(true);
-                  api("/api/tg/status").then((accs: TgAccount[]) => {
+                  api("/api/tg/status").then((res: any) => {
+                    const accs: TgAccount[] = Array.isArray(res) ? res : (res.accounts || []);
                     setTgAccounts(accs.filter(a => a.is_active));
                     if (accs.length > 0) setSelectedAccount(accs[0].id);
                   }).catch(console.error);
@@ -558,6 +622,35 @@ function ChatsContent() {
               </button>
             )}
           </div>
+          {/* Account switcher */}
+          {accountsList.length > 1 && (
+            <div className="flex gap-1 px-4 pt-2 pb-1 overflow-x-auto flex-nowrap">
+              <button
+                onClick={() => switchAccount(null)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+                  filterAccountId === null
+                    ? "bg-brand/15 text-brand border border-brand/30"
+                    : "text-slate-400 hover:text-slate-300 border border-transparent"
+                }`}
+              >
+                Все
+              </button>
+              {accountsList.filter(a => a.connected).map((acc) => (
+                <button
+                  key={acc.id}
+                  onClick={() => switchAccount(acc.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+                    filterAccountId === acc.id
+                      ? "bg-brand/15 text-brand border border-brand/30"
+                      : "text-slate-400 hover:text-slate-300 border border-transparent"
+                  }`}
+                >
+                  {acc.phone}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Filter bar: archive toggle + tag filter */}
           <div className="flex items-center gap-1.5 px-4 pt-1 pb-2 flex-wrap">
             <button
@@ -1154,7 +1247,15 @@ function ChatsContent() {
                               🗑
                             </button>
                           )}
-                          {m.is_edited && <span className="italic mr-1 text-amber-400/70">изм.</span>}
+                          {m.is_edited && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); showEditHistory(selected!.id, m.id); }}
+                              className="italic mr-1 text-amber-400/70 hover:text-amber-300 cursor-pointer transition-colors"
+                              title="Показать историю изменений"
+                            >
+                              (ред.)
+                            </button>
+                          )}
                           {new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                           {m.direction === "outgoing" && (
                             <svg className={`w-3.5 h-3.5 ${m.is_read ? "text-sky-300" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1284,6 +1385,8 @@ function ChatsContent() {
                 <div className="text-[10px] text-slate-500 mb-1.5 font-medium">Шаблоны {text.startsWith("/") && <span className="text-brand">— введите шорткат и Enter</span>}</div>
                 <div className="space-y-1">
                   {templates.filter((tpl) => {
+                    // Filter by account: show templates matching selected account or global (null)
+                    if (filterAccountId && tpl.tg_account_id && tpl.tg_account_id !== filterAccountId) return false;
                     if (!text.startsWith("/")) return true;
                     const q = text.toLowerCase();
                     return (tpl.shortcut && tpl.shortcut.toLowerCase().startsWith(q)) || tpl.title.toLowerCase().includes(q.slice(1));
@@ -1626,6 +1729,50 @@ function ChatsContent() {
         <div className="fixed bottom-20 left-1/2 -translate-x-1/2 bg-surface-card border border-brand/30 rounded-2xl px-4 py-3 shadow-lg animate-slide-up z-50 max-w-xs">
           <div className="text-xs text-brand font-medium mb-0.5">Bot response</div>
           <div className="text-sm text-white">{botToast}</div>
+        </div>
+      )}
+
+      {/* Edit history popup */}
+      {editHistoryMsg && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in" onClick={() => { setEditHistoryMsg(null); setEditHistory([]); }}>
+          <div className="bg-surface-card border border-surface-border rounded-2xl w-full max-w-sm mx-4 max-h-[60vh] flex flex-col animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <div className="p-4 border-b border-surface-border flex items-center justify-between">
+              <h3 className="font-semibold text-sm">История изменений</h3>
+              <button onClick={() => { setEditHistoryMsg(null); setEditHistory([]); }} className="text-slate-500 hover:text-white p-1">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4 space-y-3">
+              {loadingEditHistory && (
+                <div className="flex items-center justify-center py-4">
+                  <div className="w-5 h-5 border-2 border-brand/30 border-t-brand rounded-full animate-spin" />
+                </div>
+              )}
+              {!loadingEditHistory && editHistory.length === 0 && (
+                <p className="text-sm text-slate-500 text-center">Нет истории изменений</p>
+              )}
+              {editHistory.map((entry, idx) => (
+                <div key={idx} className="border border-surface-border rounded-xl p-3 space-y-1.5">
+                  <div className="text-[10px] text-slate-500">
+                    {new Date(entry.edited_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                  {entry.old_content && (
+                    <div className="text-xs text-red-400/80 line-through break-words">{entry.old_content}</div>
+                  )}
+                  <div className="text-[10px] text-slate-600 flex items-center gap-1">
+                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </div>
+                  {entry.new_content && (
+                    <div className="text-xs text-emerald-400/80 break-words">{entry.new_content}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

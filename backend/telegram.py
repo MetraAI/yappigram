@@ -11,7 +11,7 @@ from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 
 from config import settings
 from crypto import encrypt
-from models import Contact, Message, TgAccount, async_session
+from models import Contact, Message, MessageEditHistory, TgAccount, async_session
 from ws import ws_manager
 
 SESSIONS_DIR = "sessions"
@@ -319,6 +319,11 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
 
         is_group = event.is_group or event.is_channel
         peer_tg_id = event.chat_id
+
+        # Skip Telegram service account
+        if peer_tg_id == 777000:
+            return
+
         is_forum = getattr(chat, "forum", False)
         if is_forum or (is_group and getattr(chat, "megagroup", False)):
             chat_type = "supergroup"
@@ -592,6 +597,15 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
 
             if not content_changed and not buttons_changed:
                 return  # Reaction or pin — not a real edit
+
+            # Save edit history before updating
+            if content_changed:
+                history = MessageEditHistory(
+                    message_id=msg.id,
+                    old_content=msg.content,
+                    new_content=new_content,
+                )
+                db.add(history)
 
             msg.content = new_content
             msg.inline_buttons = new_buttons

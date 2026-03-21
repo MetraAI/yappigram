@@ -380,10 +380,57 @@ export interface Tag {
   id: string;
   name: string;
   color: string;
+  tg_account_id: string | null;
 }
 
 export async function deleteTag(id: string) {
   return api(`/api/tags/${id}`, { method: "DELETE" });
+}
+
+export async function fetchTags(tgAccountId?: string): Promise<Tag[]> {
+  const params = tgAccountId ? `?tg_account_id=${tgAccountId}` : "";
+  return api(`/api/tags${params}`);
+}
+
+export async function createTag(data: { name: string; color: string; tg_account_id?: string }): Promise<Tag> {
+  return api("/api/tags", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function fetchContacts(status: string = "approved", tgAccountId?: string): Promise<Contact[]> {
+  const params = new URLSearchParams({ status });
+  if (tgAccountId) params.set("tg_account_id", tgAccountId);
+  return api(`/api/contacts?${params.toString()}`);
+}
+
+export async function fetchUnread(tgAccountId?: string): Promise<Record<string, number>> {
+  const params = tgAccountId ? `?tg_account_id=${tgAccountId}` : "";
+  return api(`/api/unread${params}`);
+}
+
+export async function fetchTemplates(tgAccountId?: string): Promise<Template[]> {
+  const params = tgAccountId ? `?tg_account_id=${tgAccountId}` : "";
+  return api(`/api/templates${params}`);
+}
+
+export interface EditHistoryEntry {
+  old_content: string | null;
+  new_content: string | null;
+  edited_at: string;
+}
+
+export async function fetchEditHistory(contactId: string, messageId: string): Promise<EditHistoryEntry[]> {
+  return api(`/api/messages/${contactId}/${messageId}/edit-history`);
+}
+
+export interface TgStatusAccount {
+  id: string;
+  phone: string;
+  connected: boolean;
+  show_real_names: boolean;
+}
+
+export async function fetchTgStatus(): Promise<{ accounts: TgStatusAccount[] }> {
+  return api("/api/tg/status");
 }
 
 export interface TgAccount {

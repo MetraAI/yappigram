@@ -67,6 +67,8 @@ class TgAccount(Base):
     connected_at = Column(DateTime, default=func.now())
     org_id = Column(String, nullable=True, index=True)
 
+    show_real_names = Column(Boolean, default=False)
+
     contacts = relationship("Contact", back_populates="tg_account")
 
 
@@ -152,6 +154,7 @@ class Tag(Base):
     color = Column(String, default="#6366f1")
     created_by = Column(UUID(as_uuid=True), ForeignKey("staff.id"), nullable=True)
     org_id = Column(String, nullable=True, index=True)
+    tg_account_id = Column(UUID(as_uuid=True), ForeignKey("tg_accounts.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 
@@ -258,3 +261,14 @@ class BroadcastRecipient(Base):
     status = Column(String, default="pending")  # pending | sent | failed
     sent_at = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)
+
+
+class MessageEditHistory(Base):
+    """Tracks edit history for messages."""
+    __tablename__ = "message_edit_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=False)
+    old_content = Column(Text, nullable=True)
+    new_content = Column(Text, nullable=True)
+    edited_at = Column(DateTime, default=func.now())

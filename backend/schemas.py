@@ -165,11 +165,23 @@ class TgAccountOut(BaseModel):
 class TagCreate(BaseModel):
     name: str
     color: str = "#6366f1"
+    tg_account_id: UUID | None = None
 
 class TagOut(BaseModel):
     id: UUID
     name: str
     color: str
+    tg_account_id: UUID | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class MessageEditHistoryOut(BaseModel):
+    id: UUID
+    message_id: UUID
+    old_content: str | None = None
+    new_content: str | None = None
+    edited_at: datetime
 
     model_config = {"from_attributes": True}
 

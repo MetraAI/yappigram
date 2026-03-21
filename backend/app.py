@@ -27,7 +27,7 @@ from config import settings
 from crypto import decrypt
 from models import (
     AuditLog, Base, BotInvite, Broadcast, BroadcastRecipient, Contact,
-    Message, MessageTemplate, PinnedChat, Staff, StaffTgAccount, Tag, TgAccount, async_session, engine,
+    Message, MessageEditHistory, MessageTemplate, PinnedChat, Staff, StaffTgAccount, Tag, TgAccount, async_session, engine,
 )
 from schemas import (
     BotInviteCreate,
@@ -39,6 +39,7 @@ from schemas import (
     ContactUpdate,
     CreateGroupRequest,
     ForwardMessage,
+    MessageEditHistoryOut,
     MessageOut,
     PressButton,
     RefreshRequest,
@@ -135,6 +136,18 @@ async def on_startup():
                 ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS media_path VARCHAR;
                 ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS media_type VARCHAR;
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS org_id VARCHAR;
+                -- Tags: tg_account_id
+                ALTER TABLE tags ADD COLUMN IF NOT EXISTS tg_account_id UUID REFERENCES tg_accounts(id);
+                -- TG accounts: show_real_names
+                ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS show_real_names BOOLEAN DEFAULT false;
+                -- Message edit history table
+                CREATE TABLE IF NOT EXISTS message_edit_history (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    message_id UUID REFERENCES messages(id),
+                    old_content TEXT,
+                    new_content TEXT,
+                    edited_at TIMESTAMP DEFAULT NOW()
+                );
                 -- Indexes
                 CREATE INDEX IF NOT EXISTS ix_staff_postforge_org_id ON staff (postforge_org_id);
                 CREATE INDEX IF NOT EXISTS ix_tg_accounts_org_id ON tg_accounts (org_id);
@@ -581,11 +594,19 @@ async def list_contacts(
     status_filter: str | None = Query(None, alias="status"),
     assigned_to: UUID | None = None,
     tag: str | None = None,
+    tg_account_id: UUID | None = None,
 ):
     query = select(Contact)
 
     # Org scoping: only contacts from this org's TG accounts
     query = query.where(Contact.tg_account_id.in_(_org_accounts_subq(user)))
+
+    # Filter out Telegram service account
+    query = query.where(Contact.real_tg_id != 777000)
+
+    # Filter by specific TG account
+    if tg_account_id:
+        query = query.where(Contact.tg_account_id == tg_account_id)
 
     # Operators see contacts from their assigned TG accounts
     if user.role == "operator":
@@ -1230,10 +1251,10 @@ async def mark_read(contact_id: UUID, user: CurrentUser, db: DB):
 
 
 @app.get("/api/unread")
-async def get_unread_counts(user: CurrentUser, db: DB):
+async def get_unread_counts(user: CurrentUser, db: DB, tg_account_id: UUID | None = None):
     """Get unread message counts per contact for approved contacts."""
     from sqlalchemy import case
-    result = await db.execute(
+    query = (
         select(
             Message.contact_id,
             func.count(Message.id).label("count"),
@@ -1245,8 +1266,11 @@ async def get_unread_counts(user: CurrentUser, db: DB):
             Contact.status == "approved",
             Contact.tg_account_id.in_(_org_accounts_subq(user)),
         )
-        .group_by(Message.contact_id)
     )
+    if tg_account_id:
+        query = query.where(Contact.tg_account_id == tg_account_id)
+    query = query.group_by(Message.contact_id)
+    result = await db.execute(query)
     return {str(row.contact_id): row.count for row in result.all()}
 
 
@@ -1450,14 +1474,19 @@ async def deactivate_staff(staff_id: UUID, user: AdminUser, db: DB):
 # ============================================================
 
 @app.get("/api/tags", response_model=list[TagOut])
-async def list_tags(user: CurrentUser, db: DB):
-    result = await db.execute(select(Tag).where(Tag.org_id == _org_id(user)).order_by(Tag.name))
+async def list_tags(user: CurrentUser, db: DB, tg_account_id: UUID | None = None):
+    from sqlalchemy import or_
+    query = select(Tag).where(Tag.org_id == _org_id(user))
+    if tg_account_id:
+        query = query.where(or_(Tag.tg_account_id == tg_account_id, Tag.tg_account_id.is_(None)))
+    query = query.order_by(Tag.name)
+    result = await db.execute(query)
     return result.scalars().all()
 
 
 @app.post("/api/tags", response_model=TagOut)
 async def create_tag(req: TagCreate, user: AdminUser, db: DB):
-    tag = Tag(name=req.name, color=req.color, created_by=user.id, org_id=_org_id(user))
+    tag = Tag(name=req.name, color=req.color, created_by=user.id, org_id=_org_id(user), tg_account_id=req.tg_account_id)
     db.add(tag)
     await db.commit()
     await db.refresh(tag)
@@ -1487,8 +1516,13 @@ async def delete_tag(tag_id: UUID, user: AdminUser, db: DB):
 # ============================================================
 
 @app.get("/api/templates", response_model=list[TemplateOut])
-async def list_templates(user: CurrentUser, db: DB):
-    result = await db.execute(select(MessageTemplate).where(MessageTemplate.org_id == _org_id(user)).order_by(MessageTemplate.title))
+async def list_templates(user: CurrentUser, db: DB, tg_account_id: UUID | None = None):
+    from sqlalchemy import or_
+    query = select(MessageTemplate).where(MessageTemplate.org_id == _org_id(user))
+    if tg_account_id:
+        query = query.where(or_(MessageTemplate.tg_account_id == tg_account_id, MessageTemplate.tg_account_id.is_(None)))
+    query = query.order_by(MessageTemplate.title)
+    result = await db.execute(query)
     templates = result.scalars().all()
     # Resolve creator names
     creator_ids = {t.created_by for t in templates if t.created_by}
@@ -1548,7 +1582,7 @@ async def delete_template(template_id: UUID, user: AdminUser, db: DB):
 @app.post("/api/templates/{template_id}/upload-media")
 async def template_upload_media(
     template_id: UUID,
-    user: CurrentUser,
+    user: AdminUser,
     db: DB,
     file: UploadFile = File(...),
     send_as: str = Query("auto", description="auto|photo|video|video_note|voice|document"),
@@ -1724,10 +1758,35 @@ async def edit_message(contact_id: UUID, message_id: UUID, req: SendMessage, use
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Edit failed: {e}")
         # Content unchanged — just save locally without error
 
+    # Save edit history before updating
+    old_content = msg.content
+    history = MessageEditHistory(
+        message_id=msg.id,
+        old_content=old_content,
+        new_content=req.content,
+    )
+    db.add(history)
+
     msg.content = req.content
     msg.is_edited = True
     await db.commit()
     return {"status": "edited"}
+
+
+@app.get("/api/messages/{contact_id}/{message_id}/edit-history", response_model=list[MessageEditHistoryOut])
+async def get_edit_history(contact_id: UUID, message_id: UUID, user: CurrentUser, db: DB):
+    """Get edit history for a message."""
+    # Verify message belongs to contact
+    result = await db.execute(select(Message).where(Message.id == message_id, Message.contact_id == contact_id))
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    result = await db.execute(
+        select(MessageEditHistory)
+        .where(MessageEditHistory.message_id == message_id)
+        .order_by(MessageEditHistory.edited_at)
+    )
+    return result.scalars().all()
 
 
 # ============================================================
@@ -2125,6 +2184,10 @@ async def _do_sync_dialogs(account_id: UUID, limit: int = 50) -> int:
         async for dialog in client.iter_dialogs(limit=limit):
             peer_id = dialog.id
             if not peer_id:
+                continue
+
+            # Skip Telegram service account
+            if peer_id == 777000:
                 continue
 
             # Skip if contact already exists
