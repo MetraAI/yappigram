@@ -430,14 +430,27 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
             <Input label="Категория" value={category} onChange={setCategory} placeholder="Общие" />
           </div>
           <div>
-            <label className="text-sm text-slate-400 font-medium block mb-1.5">Текст шаблона</label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-sm text-slate-400 font-medium">Текст шаблона</label>
+              <button
+                type="button"
+                onClick={() => setContent((prev) => prev + (prev.endsWith("\n") ? "" : "\n") + "---\n")}
+                className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                title="Разделить на несколько сообщений"
+              >
+                + Разделитель
+              </button>
+            </div>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              placeholder="Здравствуйте! Чем могу помочь?"
-              rows={3}
+              placeholder={"Здравствуйте! Чем могу помочь?\n---\nВот наше предложение:"}
+              rows={4}
               className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 resize-none"
             />
+            {content.includes("\n---\n") && (
+              <div className="text-[10px] text-amber-400 mt-1">📜 Скрипт — будет отправлено {content.split("\n---\n").filter(Boolean).length} сообщений</div>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Input label="Шорткат (необязательно)" value={shortcut} onChange={setShortcut} placeholder="/hello" />

@@ -424,7 +424,7 @@ function ChatsContent() {
           });
           // Small delay between messages for natural feel
           if (part !== parts[parts.length - 1]) {
-            await new Promise((r) => setTimeout(r, 500));
+            await new Promise((r) => setTimeout(r, 10));
           }
         }
       } catch (e: any) { alert(e.message); }
