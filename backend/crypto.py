@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from cryptography.fernet import Fernet
 
 from config import settings
@@ -20,6 +22,7 @@ def encrypt(value: str | None) -> str | None:
     return _get_fernet().encrypt(value.encode()).decode()
 
 
+@lru_cache(maxsize=4096)
 def decrypt(value: str | None) -> str | None:
     if value is None:
         return None

@@ -249,6 +249,10 @@ async def on_startup():
                 CREATE INDEX IF NOT EXISTS ix_tags_org_id ON tags (org_id);
                 CREATE INDEX IF NOT EXISTS ix_message_templates_org_id ON message_templates (org_id);
                 CREATE INDEX IF NOT EXISTS ix_broadcasts_org_id ON broadcasts (org_id);
+                CREATE INDEX IF NOT EXISTS ix_contacts_tg_account_id ON contacts (tg_account_id);
+                CREATE INDEX IF NOT EXISTS ix_contacts_last_message_at ON contacts (last_message_at DESC NULLS LAST);
+                CREATE INDEX IF NOT EXISTS ix_contacts_status ON contacts (status);
+                CREATE INDEX IF NOT EXISTS ix_messages_contact_id ON messages (contact_id);
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             """)
@@ -1643,7 +1647,7 @@ async def list_templates(user: CurrentUser, db: DB, tg_account_id: UUID | None =
     query = select(MessageTemplate).where(MessageTemplate.org_id == _org_id(user))
     if tg_account_id:
         query = query.where(or_(MessageTemplate.tg_account_id == tg_account_id, MessageTemplate.tg_account_id.is_(None)))
-    query = query.order_by(MessageTemplate.title)
+    query = query.order_by(MessageTemplate.created_at)
     result = await db.execute(query)
     templates = result.scalars().all()
     # Resolve creator names
