@@ -936,11 +936,11 @@ function ChatsContent() {
                 </button>
               )}
 
-              {/* Translation language selectors — hidden on mobile */}
+              {/* Translation language selectors */}
               <select
                 value={translateLangIn}
                 onChange={(e) => setTranslateLangIn(e.target.value)}
-                className="hidden md:block px-2 py-1.5 rounded-xl border border-surface-border bg-surface-card text-xs text-slate-400 focus:outline-none focus:border-brand/30 cursor-pointer shrink-0"
+                className="px-1.5 py-1 rounded-lg border border-surface-border bg-surface-card text-[10px] md:text-xs text-slate-400 focus:outline-none focus:border-brand/30 cursor-pointer shrink-0"
                 title="Язык перевода входящих"
               >
                 <option value="ru">↓ RU</option>
@@ -959,7 +959,7 @@ function ChatsContent() {
               <select
                 value={translateLangOut}
                 onChange={(e) => setTranslateLangOut(e.target.value)}
-                className="hidden md:block px-2 py-1.5 rounded-xl border border-surface-border bg-surface-card text-xs text-slate-400 focus:outline-none focus:border-brand/30 cursor-pointer shrink-0"
+                className="px-1.5 py-1 rounded-lg border border-surface-border bg-surface-card text-[10px] md:text-xs text-slate-400 focus:outline-none focus:border-brand/30 cursor-pointer shrink-0"
                 title="Язык перевода исходящих"
               >
                 <option value="en">↑ EN</option>
