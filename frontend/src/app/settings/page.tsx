@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, clearTokens, getTemplates, createTemplate, updateTemplate, deleteTemplate, deleteTag, getRole, fetchTgStatus, createTag, updateTimezone, fetchNewChatsReport } from "@/lib";
+import { api, clearTokens, disconnectWS, getTemplates, createTemplate, updateTemplate, deleteTemplate, deleteTag, getRole, fetchTgStatus, createTag, updateTimezone, fetchNewChatsReport } from "@/lib";
 import type { Template, TgStatusAccount, NewChatsReport } from "@/lib";
 import { AppShell, AuthGuard, Button, Input } from "@/components";
 import { useRouter } from "next/navigation";
@@ -71,7 +71,7 @@ function WorkspaceSection() {
             <div className="text-sm font-medium text-white">{wsName || "..."}</div>
             <div className="text-xs text-slate-500 mt-0.5">Текущее рабочее пространство CRM</div>
           </div>
-          <Button variant="ghost" onClick={() => { clearTokens(); router.replace("/login"); }}>
+          <Button variant="ghost" onClick={() => { clearTokens(); disconnectWS(); router.replace("/login?switch=1"); }}>
             Сменить
           </Button>
         </div>

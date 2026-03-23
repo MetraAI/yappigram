@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class TgAuthRequest(BaseModel):
     init_data: str
+    force_select: bool = False
 
 class TokenResponse(BaseModel):
     access_token: str

@@ -445,8 +445,8 @@ async def tg_auth(req: TgAuthRequest, request: Request, db: DB):
     if not all_staff:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Нет доступа. Привяжите Telegram в METRA AI.")
 
-    # 4. Single workspace — auto-login
-    if len(all_staff) == 1:
+    # 4. Single workspace — auto-login (unless force_select requested)
+    if len(all_staff) == 1 and not req.force_select:
         user = all_staff[0]
         return TgAuthResponse(
             access_token=create_token(user.id, "access"),

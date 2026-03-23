@@ -232,7 +232,7 @@ export type TgAuthResult =
   | { ok: false; workspaces?: undefined }
   | { ok: false; workspaces: TgWorkspace[] };
 
-export async function tgAuth(): Promise<TgAuthResult> {
+export async function tgAuth(forceSelect: boolean = false): Promise<TgAuthResult> {
   const initData = getTgInitData();
   if (!initData) return { ok: false };
 
@@ -240,7 +240,7 @@ export async function tgAuth(): Promise<TgAuthResult> {
     const res = await fetch(`${API}/api/auth/tg`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ init_data: initData }),
+      body: JSON.stringify({ init_data: initData, force_select: forceSelect }),
     });
 
     if (!res.ok) return { ok: false };

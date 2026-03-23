@@ -60,11 +60,15 @@ export default function LoginPage() {
     if (isTelegramWebApp()) {
       getTgWebApp()?.ready();
       getTgWebApp()?.expand();
-      tgAuth().then((result) => {
-        if (result.ok) {
+      const forceSwitch = params.get("switch") === "1";
+      tgAuth(forceSwitch).then((result) => {
+        if (result.ok && !forceSwitch) {
           router.replace("/chats");
-        } else if (result.workspaces) {
-          setWorkspaces(result.workspaces);
+        } else if (result.workspaces || forceSwitch) {
+          // Force workspace picker when switching
+          if (result.workspaces) {
+            setWorkspaces(result.workspaces);
+          }
           setStatus("workspaces");
         } else {
           setStatus("error");
