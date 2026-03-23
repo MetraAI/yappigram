@@ -102,14 +102,28 @@ let _handlers: WSHandler[] = [];
 let _wsRetries = 0;
 const WS_MAX_RETRIES = 10;
 
-export function connectWS() {
-  const tokens = getTokens();
-  if (!tokens?.access_token || _ws) return;
+export async function connectWS() {
+  if (_ws) return;
+
+  // Get fresh token — refresh if needed
+  let tokens = getTokens();
+  if (!tokens?.access_token) return;
+
+  // Try a quick validation — if token might be expired, refresh first
+  if (_wsRetries > 0 && tokens.refresh_token) {
+    const fresh = await refreshTokens();
+    if (fresh) {
+      tokens = getTokens();
+    } else {
+      return; // Can't refresh — stop retrying
+    }
+  }
+
+  if (!tokens?.access_token) return;
 
   const wsBase = API
     ? API.replace("http", "ws")
     : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
-  // Use pathname base to support basePath deployments (e.g. /crm/ws)
   const pathBase = typeof window !== "undefined" ? (window.location.pathname.match(/^\/[^/]+/)?.[0] || "") : "";
   _ws = new WebSocket(`${wsBase}${pathBase}/ws?token=${tokens.access_token}`);
 
