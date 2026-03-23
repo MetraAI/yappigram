@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, clearTokens, getTemplates, createTemplate, deleteTemplate, deleteTag, getRole, fetchTgStatus, createTag } from "@/lib";
+import { api, clearTokens, getTemplates, createTemplate, updateTemplate, deleteTemplate, deleteTag, getRole, fetchTgStatus, createTag } from "@/lib";
 import type { Template, TgStatusAccount } from "@/lib";
 import { AppShell, AuthGuard, Button, Input } from "@/components";
 import { useRouter } from "next/navigation";
@@ -138,7 +138,7 @@ function TelegramSection() {
         <div key={acc.id} className="bg-gradient-to-r from-surface-card to-surface border border-surface-border rounded-xl p-4 mb-2">
           <div className="flex items-center gap-3">
             <div className={`w-2 h-2 rounded-full flex-shrink-0 ${acc.is_active ? "bg-emerald-400" : "bg-red-400"}`} />
-            <span className="font-medium text-sm">{acc.phone}</span>
+            <span className="font-medium text-sm">{acc.display_name || acc.phone}</span>
             <span className={`text-xs ${acc.is_active ? "text-emerald-400/70" : "text-red-400/70"}`}>
               {acc.is_active ? "Активен" : "Отключён"}
             </span>
@@ -175,7 +175,7 @@ function TelegramSection() {
 
 function TagsSection() {
   const [tags, setTags] = useState<any[]>([]);
-  const [accounts, setAccounts] = useState<{ id: string; phone: string }[]>([]);
+  const [accounts, setAccounts] = useState<{ id: string; phone: string; display_name: string | null }[]>([]);
   const [name, setName] = useState("");
   const [color, setColor] = useState("#0ea5e9");
   const [tagAccount, setTagAccount] = useState("");
@@ -183,7 +183,7 @@ function TagsSection() {
   useEffect(() => {
     api("/api/tags").then(setTags).catch(console.error);
     fetchTgStatus().then((accs) => {
-      setAccounts(accs.filter((a) => a.is_active !== false).map((a) => ({ id: a.id, phone: a.phone })));
+      setAccounts(accs.filter((a) => a.is_active !== false).map((a) => ({ id: a.id, phone: a.phone, display_name: a.display_name })));
     }).catch(() => {});
   }, []);
 
@@ -217,17 +217,17 @@ function TagsSection() {
         </svg>
         Теги
       </h2>
-      <div className="flex flex-wrap gap-2 mb-4">
+      <div className="flex overflow-x-auto gap-2 mb-4 pb-1" style={{ scrollbarWidth: "thin" }}>
         {tags.map((t) => (
           <span
             key={t.id}
-            className="group relative px-3 py-1.5 rounded-full text-sm font-medium border animate-fade-in"
+            className="group relative px-3 py-1.5 rounded-full text-sm font-medium border animate-fade-in whitespace-nowrap shrink-0"
             style={{ backgroundColor: t.color + "15", color: t.color, borderColor: t.color + "30" }}
           >
             {t.name}
             {t.tg_account_id && (
               <span className="ml-1 text-[10px] opacity-60">
-                ({accounts.find((a) => a.id === t.tg_account_id)?.phone || "—"})
+                ({(() => { const a = accounts.find((a) => a.id === t.tg_account_id); return a?.display_name || a?.phone || "—"; })()})
               </span>
             )}
             <button
@@ -264,7 +264,7 @@ function TagsSection() {
             >
               <option value="">Общий (все)</option>
               {accounts.map((acc) => (
-                <option key={acc.id} value={acc.id}>{acc.phone}</option>
+                <option key={acc.id} value={acc.id}>{acc.display_name || acc.phone}</option>
               ))}
             </select>
           </div>
@@ -277,7 +277,7 @@ function TagsSection() {
 
 function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [accounts, setAccounts] = useState<{ id: string; phone: string }[]>([]);
+  const [accounts, setAccounts] = useState<{ id: string; phone: string; display_name: string | null }[]>([]);
   const [filterAccount, setFilterAccount] = useState<string | "all">("all");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -291,7 +291,7 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
     getTemplates().then(setTemplates).catch(console.error);
     api("/api/tg/status").then((res: any) => {
       const accs = Array.isArray(res) ? res : (res.accounts || []);
-      setAccounts(accs.map((a: any) => ({ id: a.id, phone: a.phone })));
+      setAccounts(accs.map((a: any) => ({ id: a.id, phone: a.phone, display_name: a.display_name || null })));
     }).catch(() => {});
   }, []);
 
@@ -335,6 +335,42 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
     } catch (e: any) { alert(e.message); }
   };
 
+  // Edit template state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [editCategory, setEditCategory] = useState("");
+  const [editShortcut, setEditShortcut] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  const startEdit = (tpl: Template) => {
+    setEditingId(tpl.id);
+    setEditTitle(tpl.title);
+    setEditContent(tpl.content);
+    setEditCategory(tpl.category || "");
+    setEditShortcut(tpl.shortcut || "");
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditTitle(""); setEditContent(""); setEditCategory(""); setEditShortcut("");
+  };
+
+  const handleEditSave = async () => {
+    if (!editingId || !editTitle.trim() || !editContent.trim() || editSaving) return;
+    setEditSaving(true);
+    try {
+      const updated = await updateTemplate(editingId, {
+        title: editTitle.trim(),
+        content: editContent.trim(),
+        category: editCategory.trim() || null,
+        shortcut: editShortcut.trim() || null,
+      });
+      setTemplates((prev) => prev.map((t) => t.id === editingId ? { ...t, ...updated } : t));
+      cancelEdit();
+    } catch (e: any) { alert(e.message); } finally { setEditSaving(false); }
+  };
+
   return (
     <section className="animate-fade-in">
       <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
@@ -365,7 +401,7 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
                 filterAccount === acc.id ? "bg-brand/15 text-brand" : "text-slate-400 hover:text-slate-300"
               }`}
             >
-              {acc.phone}
+              {acc.display_name || acc.phone}
             </button>
           ))}
         </div>
@@ -373,6 +409,30 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
 
       <div className="space-y-2 mb-4">
         {filteredTemplates.map((tpl) => (
+          editingId === tpl.id ? (
+            <div key={tpl.id} className="bg-gradient-to-br from-surface-card to-surface border border-brand/30 rounded-xl p-4 space-y-3 animate-fade-in">
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Название" value={editTitle} onChange={setEditTitle} placeholder="Приветствие" />
+                <Input label="Категория" value={editCategory} onChange={setEditCategory} placeholder="Общие" />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400 font-medium block mb-1.5">Текст шаблона</label>
+                <textarea
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  rows={3}
+                  className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 resize-none"
+                />
+              </div>
+              <Input label="Шорткат" value={editShortcut} onChange={setEditShortcut} placeholder="/hello" />
+              <div className="flex gap-2">
+                <Button onClick={handleEditSave} disabled={!editTitle.trim() || !editContent.trim() || editSaving}>
+                  {editSaving ? "Сохранение..." : "Сохранить"}
+                </Button>
+                <Button variant="ghost" onClick={cancelEdit}>Отмена</Button>
+              </div>
+            </div>
+          ) : (
           <div key={tpl.id} className="bg-surface-card border border-surface-border rounded-xl p-3 flex items-start justify-between gap-3 animate-fade-in">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 mb-1">
@@ -386,7 +446,7 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
                 {tpl.shortcut && <span className="text-[10px] text-slate-500 font-mono">{tpl.shortcut}</span>}
                 {tpl.tg_account_id && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">
-                    {accounts.find((a) => a.id === tpl.tg_account_id)?.phone || "—"}
+                    {(() => { const a = accounts.find((a) => a.id === tpl.tg_account_id); return a?.display_name || a?.phone || "—"; })()}
                   </span>
                 )}
                 {tpl.created_by_name && (
@@ -396,13 +456,21 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
               <p className="text-xs text-slate-400 break-words">{tpl.content.slice(0, 150)}{tpl.content.length > 150 ? "..." : ""}</p>
             </div>
             {isAdmin && (
-              <button onClick={() => handleDelete(tpl.id)} className="text-slate-600 hover:text-red-400 transition-colors p-1 shrink-0">
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                </svg>
-              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => startEdit(tpl)} className="text-slate-600 hover:text-brand transition-colors p-1">
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
+                </button>
+                <button onClick={() => handleDelete(tpl.id)} className="text-slate-600 hover:text-red-400 transition-colors p-1">
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
+                </button>
+              </div>
             )}
           </div>
+          )
         ))}
         {filteredTemplates.length === 0 && <span className="text-sm text-slate-500">Шаблонов пока нет</span>}
       </div>
@@ -447,7 +515,7 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
               >
                 <option value="">Общий (все аккаунты)</option>
                 {accounts.map((acc) => (
-                  <option key={acc.id} value={acc.id}>{acc.phone}</option>
+                  <option key={acc.id} value={acc.id}>{acc.display_name || acc.phone}</option>
                 ))}
               </select>
             </div>
@@ -550,7 +618,7 @@ function AdminSettingsSection() {
           {accounts.map((acc) => (
             <div key={acc.id} className="bg-gradient-to-r from-surface-card to-surface border border-surface-border rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-medium text-slate-300">{acc.phone}</span>
+                <span className="text-sm font-medium text-slate-300">{acc.display_name || acc.phone}</span>
               </div>
               <div className="flex gap-2">
                 <button

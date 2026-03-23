@@ -178,6 +178,8 @@ def _extract_media(msg_obj) -> tuple[str | None, str | None]:
         return "video", ".mp4"
     if msg_obj.voice:
         return "voice", ".ogg"
+    if msg_obj.sticker:
+        return "sticker", None  # No file download for stickers
     if msg_obj.document:
         return "document", ""
     return None, None
@@ -289,6 +291,12 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                     forwarded_from_alias = "[hidden]"
 
             sanitized_content = sanitize_text(msg_obj.text)
+            # For stickers, use emoji as content fallback
+            if media_type == "sticker" and not sanitized_content:
+                sanitized_content = getattr(msg_obj.document, "attributes", None) and next(
+                    (getattr(a, "alt", None) for a in msg_obj.document.attributes if getattr(a, "alt", None)),
+                    None,
+                ) or None
             msg = Message(
                 contact_id=contact.id,
                 tg_message_id=msg_obj.id,
@@ -498,6 +506,12 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
 
             # --- SAVE MESSAGE ---
             sanitized_content = sanitize_text(msg_obj.text)
+            # For stickers, use emoji as content fallback
+            if media_type == "sticker" and not sanitized_content:
+                sanitized_content = getattr(msg_obj.document, "attributes", None) and next(
+                    (getattr(a, "alt", None) for a in msg_obj.document.attributes if getattr(a, "alt", None)),
+                    None,
+                ) or None
             msg = Message(
                 contact_id=contact.id,
                 tg_message_id=msg_obj.id,

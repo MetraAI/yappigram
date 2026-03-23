@@ -171,7 +171,14 @@ async def serve_media(file_path: str):
     # Images served inline, everything else as attachment
     is_image = content_type.startswith("image/")
     disposition = "inline" if is_image else "attachment"
-    filename = os.path.basename(safe_path)
+    raw_filename = os.path.basename(safe_path)
+    # Strip UUID_msgid prefix from document filenames (e.g. "abc123_456_report.pdf" -> "report.pdf")
+    # Telethon saves as "{contactid}_{msgid}{ext}" but for documents may produce "{contactid}_{msgid}_originalname.ext"
+    import re
+    cleaned = re.sub(r"^[0-9a-f-]+_\d+", "", raw_filename, count=1)
+    # Remove leading underscores/dots left after stripping prefix
+    cleaned = cleaned.lstrip("_").lstrip(".")
+    filename = cleaned if cleaned else raw_filename
 
     return FileResponse(
         safe_path,
@@ -807,6 +814,20 @@ async def update_contact(contact_id: UUID, req: ContactUpdate, user: CurrentUser
 
     await db.commit()
     await db.refresh(contact)
+
+    # Apply show_real_names / group title resolution (same as GET endpoint)
+    if contact.chat_type != "private":
+        title = decrypt(contact.group_title_encrypted) if contact.group_title_encrypted else None
+        if title:
+            contact.alias = title
+    elif contact.tg_account_id:
+        acct = await db.execute(select(TgAccount.show_real_names).where(TgAccount.id == contact.tg_account_id))
+        show_real = acct.scalar_one_or_none()
+        if show_real:
+            real_name = decrypt(contact.real_name_encrypted) if contact.real_name_encrypted else None
+            if real_name:
+                contact.alias = real_name
+
     return contact
 
 
