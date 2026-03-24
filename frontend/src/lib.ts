@@ -100,7 +100,7 @@ type WSHandler = (event: any) => void;
 let _ws: WebSocket | null = null;
 let _handlers: WSHandler[] = [];
 let _wsRetries = 0;
-const WS_MAX_RETRIES = 10;
+const WS_MAX_RETRIES = 50;
 
 export async function connectWS() {
   if (_ws) return;
@@ -109,14 +109,12 @@ export async function connectWS() {
   let tokens = getTokens();
   if (!tokens?.access_token) return;
 
-  // Try a quick validation — if token might be expired, refresh first
+  // On retry, try to refresh token first
   if (_wsRetries > 0 && tokens.refresh_token) {
-    const fresh = await refreshTokens();
-    if (fresh) {
-      tokens = getTokens();
-    } else {
-      return; // Can't refresh — stop retrying
-    }
+    try {
+      const fresh = await refreshTokens();
+      if (fresh) tokens = getTokens();
+    } catch { /* ignore refresh errors, try with current token */ }
   }
 
   if (!tokens?.access_token) return;
