@@ -119,10 +119,10 @@ export async function connectWS() {
 
   if (!tokens?.access_token) return;
 
-  const wsBase = API
-    ? API.replace("http", "ws")
-    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
-  const pathBase = typeof window !== "undefined" ? (window.location.pathname.match(/^\/[^/]+/)?.[0] || "") : "";
+  // Always use current origin for WS (not API URL which may be /crm-api proxy)
+  const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsBase = `${wsProto}//${window.location.host}`;
+  const pathBase = window.location.pathname.match(/^\/[^/]+/)?.[0] || "";
   _ws = new WebSocket(`${wsBase}${pathBase}/ws?token=${tokens.access_token}`);
 
   _ws.onopen = () => {
