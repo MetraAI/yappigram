@@ -454,6 +454,8 @@ async def tg_auth(req: TgAuthRequest, request: Request, db: DB):
         await db.refresh(user)
         all_staff = [user]
 
+    print(f"[AUTH] tg_id={tg_id} found {len(all_staff)} staff: {[(s.postforge_org_id, s.role) for s in all_staff]} force_select={req.force_select}")
+
     if not all_staff:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Нет доступа. Привяжите Telegram в METRA AI.")
 
