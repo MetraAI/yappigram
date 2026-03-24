@@ -784,22 +784,25 @@ async def list_contacts(
     last_msg_map: dict = {}
     if contact_ids:
         from sqlalchemy import func as sa_func
-        # Subquery: max message id per contact
+        # Subquery: latest message per contact using created_at (MAX on UUID not supported in PG)
         latest_sub = (
-            select(Message.contact_id, sa_func.max(Message.id).label("max_id"))
+            select(Message.contact_id, sa_func.max(Message.created_at).label("max_ts"))
             .where(Message.contact_id.in_(contact_ids))
             .group_by(Message.contact_id)
             .subquery()
         )
         msg_result = await db.execute(
             select(Message.contact_id, Message.content, Message.media_type)
-            .join(latest_sub, (Message.contact_id == latest_sub.c.contact_id) & (Message.id == latest_sub.c.max_id))
+            .join(latest_sub, (Message.contact_id == latest_sub.c.contact_id) & (Message.created_at == latest_sub.c.max_ts))
         )
         for row in msg_result.all():
+            cid = row[0]
+            if cid in last_msg_map:
+                continue  # Dedupe (multiple msgs at same timestamp)
             content = row[1]
             if not content and row[2]:
                 content = f"[{row[2]}]"
-            last_msg_map[row[0]] = (content or "")[:100]
+            last_msg_map[cid] = (content or "")[:100]
 
     for c in contacts:
         if c.chat_type != "private":
