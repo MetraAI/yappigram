@@ -314,6 +314,29 @@ function ChatsContent() {
     return unsub;
   }, []);
 
+  // Polling fallback: refresh contacts every 10s (handles WS being down)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const acctId = filterAccountRef.current || undefined;
+      fetchContacts(undefined, acctId).then((data: Contact[]) => {
+        setContacts((prev) => {
+          const newSorted = data.sort((a, b) => {
+            const ap = pinned.has(a.id) ? 1 : 0;
+            const bp = pinned.has(b.id) ? 1 : 0;
+            if (ap !== bp) return bp - ap;
+            return (b.last_message_at || "").localeCompare(a.last_message_at || "");
+          });
+          // Only update if something changed
+          if (JSON.stringify(newSorted.map((c: Contact) => c.last_message_at)) !== JSON.stringify(prev.map((c: Contact) => c.last_message_at))) {
+            return newSorted;
+          }
+          return prev;
+        });
+      }).catch(() => {});
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
   const [loadingMessages, setLoadingMessages] = useState(false);
   useEffect(() => {
     if (!selected) return;
@@ -428,6 +451,16 @@ function ChatsContent() {
         if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
+      // Move this chat to top + update last message preview
+      setContacts((prev) => prev
+        .map((c: Contact) => c.id === selected.id ? { ...c, last_message_at: new Date().toISOString(), last_message_content: savedText.slice(0, 100) } : c)
+        .sort((a: Contact, b: Contact) => {
+          const ap = pinned.has(a.id) ? 1 : 0;
+          const bp = pinned.has(b.id) ? 1 : 0;
+          if (ap !== bp) return bp - ap;
+          return (b.last_message_at || "").localeCompare(a.last_message_at || "");
+        })
+      );
     } catch (e: any) {
       // Restore text on failure
       setText(savedText);
