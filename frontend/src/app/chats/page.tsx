@@ -236,6 +236,8 @@ function ChatsContent() {
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
+    // Skip empty messages (clearing phase during chat switch)
+    if (messages.length === 0) return;
     // Always scroll to bottom when chat first opens
     if (justOpenedChat.current) {
       justOpenedChat.current = false;
