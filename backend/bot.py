@@ -446,17 +446,24 @@ async def cmd_add_chat(message: TgMessage):
             await message.answer("❌ Нет подключённых TG аккаунтов")
             return
 
-        # Check if contact already exists
+        # Check if contact already exists — auto-approve if not yet approved
         existing = await db.execute(
             select(Contact).where(Contact.real_tg_id == tg_id, Contact.tg_account_id == account.id)
         )
         contact = existing.scalars().first()
         if contact:
-            status_emoji = {"approved": "✅", "pending": "⏳", "blocked": "❌", "dormant": "💤"}.get(contact.status, "❓")
+            if contact.status == "approved":
+                await message.answer(
+                    f"✅ Чат уже одобрен\n\nПсевдоним: <b>{_esc(contact.alias)}</b>",
+                    parse_mode="HTML",
+                )
+                return
+            # Auto-approve dormant/pending/blocked
+            contact.status = "approved"
+            contact.approved_at = datetime.utcnow()
+            await db.commit()
             await message.answer(
-                f"ℹ️ Чат уже в CRM\n\n"
-                f"Псевдоним: <b>{_esc(contact.alias)}</b>\n"
-                f"Статус: {status_emoji} {contact.status}",
+                f"✅ Чат одобрен!\n\nПсевдоним: <b>{_esc(contact.alias)}</b>\nТеперь доступен в CRM.",
                 parse_mode="HTML",
             )
             return
