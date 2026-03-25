@@ -17,13 +17,13 @@ export default function LoginPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
 
-    // Pre-authenticated tokens (passed directly from PostForge parent) — always take priority
-    const accessToken = params.get("access_token");
-    const refreshToken = params.get("refresh_token");
+    // Pre-authenticated tokens from hash fragment or query params
+    const hashParams = window.location.hash ? new URLSearchParams(window.location.hash.substring(1)) : null;
+    const accessToken = hashParams?.get("access_token") || params.get("access_token");
+    const refreshToken = hashParams?.get("refresh_token") || params.get("refresh_token");
     if (accessToken && refreshToken) {
-      const role = params.get("role") || "operator";
+      const role = hashParams?.get("role") || params.get("role") || "operator";
       saveTokens({ access_token: accessToken, refresh_token: refreshToken, role });
-      // Use window.location for reliable navigation (router.replace can hang in iframes)
       const base = window.location.pathname.split("/login")[0] || "";
       window.location.href = base + "/chats/";
       return;
