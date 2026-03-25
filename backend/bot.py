@@ -411,7 +411,17 @@ async def cmd_app(message: TgMessage):
 @dp.message(Command("add"))
 async def cmd_add_chat(message: TgMessage):
     """Add a chat/group by Telegram ID: /add <tg_id>"""
-    if not _is_admin(message.chat.id):
+    # Allow TG_ADMIN + any staff with admin/super_admin role
+    is_allowed = _is_admin(message.chat.id)
+    if not is_allowed:
+        async with async_session() as db:
+            r = await db.execute(
+                select(Staff).where(Staff.tg_user_id == message.from_user.id, Staff.is_active.is_(True))
+            )
+            staff = r.scalar_one_or_none()
+            is_allowed = staff is not None and staff.role in ("admin", "super_admin")
+    if not is_allowed:
+        await message.answer("⛔ Только для администраторов")
         return
 
     parts = message.text.split(maxsplit=1)
