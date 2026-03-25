@@ -190,6 +190,22 @@ function ChatsContent() {
   // Sending state (prevent freeze)
   const [sending, setSending] = useState(false);
 
+  // Context menu (right-click / long-press)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; message: Message } | null>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggered = useRef(false);
+
+  // Pending media files (attach before sending)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+
+  // Input dropdown menu (emoji/translate/schedule)
+  const [showInputMenu, setShowInputMenu] = useState(false);
+
+  // Scheduled message
+  const [scheduleMode, setScheduleMode] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("");
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<Contact | null>(null);
   const filterAccountRef = useRef<string | null>(null);
@@ -414,46 +430,89 @@ function ChatsContent() {
     return () => clearTimeout(t);
   }, [botToast]);
 
+  // Close context menu on outside click/scroll/resize
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [contextMenu]);
+
+  // Close input menu on outside click
+  useEffect(() => {
+    if (!showInputMenu) return;
+    const close = (e: any) => {
+      if (!(e.target as HTMLElement).closest?.(".input-menu-container")) setShowInputMenu(false);
+    };
+    setTimeout(() => window.addEventListener("click", close), 0);
+    return () => window.removeEventListener("click", close);
+  }, [showInputMenu]);
+
   const sendingRef = useRef(false);
   const sendMessage = async () => {
     const content = text.trim();
-    if (!content || !selected || sendingRef.current) return;
+    const hasFiles = pendingFiles.length > 0;
+    if ((!content && !hasFiles) || !selected || sendingRef.current) return;
     sendingRef.current = true;
 
-    // Check for shortcut match
-    const matchedTpl = checkShortcut(content);
-    if (matchedTpl) {
-      setText("");
-      if (inputRef.current) inputRef.current.style.height = "auto";
-      await applyTemplate(matchedTpl);
-      sendingRef.current = false;
-      return;
+    // Check for shortcut match (text-only)
+    if (content && !hasFiles) {
+      const matchedTpl = checkShortcut(content);
+      if (matchedTpl) {
+        setText("");
+        if (inputRef.current) inputRef.current.style.height = "auto";
+        await applyTemplate(matchedTpl);
+        sendingRef.current = false;
+        return;
+      }
     }
 
     // Clear input immediately for snappy UX
     const savedText = content;
     const savedReply = replyTo;
+    const savedFiles = [...pendingFiles];
     setText("");
     setReplyTo(null);
+    setPendingFiles([]);
     setShowEmoji(false);
     setShowTemplates(false);
+    setShowInputMenu(false);
     if (inputRef.current) inputRef.current.style.height = "auto";
     setSending(true);
     try {
-      const body: any = { content: savedText };
-      if (savedReply) body.reply_to_msg_id = savedReply.id;
-
-      const msg = await api(`/api/messages/${selected.id}/send`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === msg.id)) return prev;
-        return [...prev, msg];
-      });
+      if (savedFiles.length > 0) {
+        // Send files — last one gets caption
+        for (let i = 0; i < savedFiles.length; i++) {
+          const isLast = i === savedFiles.length - 1;
+          const caption = isLast ? savedText : undefined;
+          const msg = await uploadMedia(selected.id, savedFiles[i], caption || undefined);
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === msg.id)) return prev;
+            return [...prev, msg];
+          });
+        }
+      } else {
+        // Text-only message
+        const body: any = { content: savedText };
+        if (savedReply) body.reply_to_msg_id = savedReply.id;
+        const msg = await api(`/api/messages/${selected.id}/send`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+      }
       // Move this chat to top + update last message preview
       setContacts((prev) => prev
-        .map((c: Contact) => c.id === selected.id ? { ...c, last_message_at: new Date().toISOString(), last_message_content: savedText.slice(0, 100) } : c)
+        .map((c: Contact) => c.id === selected.id ? { ...c, last_message_at: new Date().toISOString(), last_message_content: (savedText || "[media]").slice(0, 100) } : c)
         .sort((a: Contact, b: Contact) => {
           const ap = pinned.has(a.id) ? 1 : 0;
           const bp = pinned.has(b.id) ? 1 : 0;
@@ -464,6 +523,7 @@ function ChatsContent() {
     } catch (e: any) {
       // Restore text on failure
       setText(savedText);
+      if (savedFiles.length > 0) setPendingFiles(savedFiles);
       alert(e.message);
     } finally { sendingRef.current = false; setSending(false); }
   };
@@ -584,17 +644,15 @@ function ChatsContent() {
     setLoadingEditHistory(false);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !selected || sending) return;
-    setSending(true);
-    try {
-      const msg = await uploadMedia(selected.id, file, text.trim() || undefined);
-      setMessages((prev) => [...prev, msg]);
-      setText("");
-    } catch (err: any) { alert(err.message); }
-    setSending(false);
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || !selected) return;
+    setPendingFiles((prev) => [...prev, ...Array.from(files)].slice(0, 5));
     e.target.value = "";
+  };
+
+  const removePendingFile = (idx: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const renameContact = async () => {
@@ -1180,7 +1238,30 @@ function ChatsContent() {
                     )}
 
                     <div
-                      className={`max-w-[75%] min-w-0 ${m.direction === "outgoing" ? "ml-auto" : ""}`}
+                      className={`max-w-[75%] min-w-0 select-none ${m.direction === "outgoing" ? "ml-auto" : ""}`}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const menuH = 280;
+                        const menuW = 200;
+                        const y = e.clientY + menuH > window.innerHeight ? e.clientY - menuH : e.clientY;
+                        const x = Math.min(e.clientX, window.innerWidth - menuW);
+                        setContextMenu({ x, y, message: m });
+                      }}
+                      onTouchStart={(e) => {
+                        longPressTriggered.current = false;
+                        longPressTimer.current = setTimeout(() => {
+                          longPressTriggered.current = true;
+                          const touch = e.touches[0];
+                          const menuH = 280;
+                          const menuW = 200;
+                          const y = touch.clientY + menuH > window.innerHeight ? touch.clientY - menuH : touch.clientY;
+                          const x = Math.min(touch.clientX, window.innerWidth - menuW);
+                          setContextMenu({ x, y, message: m });
+                        }, 500);
+                      }}
+                      onTouchEnd={() => { if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; } }}
+                      onTouchMove={() => { if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; } }}
                       onDoubleClick={() => { if (!forwardMode) { setReplyTo(m); inputRef.current?.focus(); } }}
                     >
                       {/* Topic badge for forum supergroups */}
@@ -1251,11 +1332,17 @@ function ChatsContent() {
                           </div>
                         )}
 
-                        {/* Media */}
+                        {/* Sticker */}
                         {m.media_type === "sticker" && (
-                          <div className="mb-2 text-2xl">
-                            {m.content || "\uD83C\uDFF7\uFE0F Стикер"}
-                          </div>
+                          m.media_path ? (
+                            m.media_path.endsWith(".webm") ? (
+                              <video src={mediaUrl(m.media_path)} autoPlay loop muted playsInline className="mb-2 max-w-[200px] max-h-[200px] rounded-lg" />
+                            ) : (
+                              <img src={mediaUrl(m.media_path)} alt="" className="mb-2 max-w-[200px] max-h-[200px]" loading="lazy" />
+                            )
+                          ) : (
+                            <div className="mb-2 text-5xl">{m.content || "\uD83C\uDFF7\uFE0F"}</div>
+                          )
                         )}
                         {m.media_type && m.media_type !== "sticker" && m.media_path && (
                           <div className="mb-2">
@@ -1308,18 +1395,8 @@ function ChatsContent() {
                           </div>
                         )}
 
-                        {/* Timestamp + edited + read status + actions */}
+                        {/* Timestamp + edited + read status */}
                         <div className={`flex items-center justify-end gap-1 text-[10px] mt-1 ${m.direction === "outgoing" ? "text-white/40" : "text-slate-500"}`}>
-                          {/* Translate button */}
-                          {m.content && !translations.has(m.id) && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleTranslate(m.id, m.content!, m.direction); }}
-                              className={`hover:text-brand transition-colors ${translating === m.id ? "animate-pulse" : ""}`}
-                              title="Перевести"
-                            >
-                              🌐
-                            </button>
-                          )}
                           {translations.has(m.id) && (
                             <button
                               onClick={(e) => { e.stopPropagation(); setTranslations((prev) => { const n = new Map(prev); n.delete(m.id); return n; }); }}
@@ -1327,33 +1404,6 @@ function ChatsContent() {
                               title="Скрыть перевод"
                             >
                               ✕
-                            </button>
-                          )}
-                          {/* Edit button (outgoing only) */}
-                          {m.direction === "outgoing" && m.content && !m.is_deleted && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setEditingMsg(m); setEditText(m.content || ""); }}
-                              className="hover:text-brand transition-colors"
-                              title="Редактировать"
-                            >
-                              ✏️
-                            </button>
-                          )}
-                          {/* Delete button (outgoing only) */}
-                          {m.direction === "outgoing" && !m.is_deleted && (
-                            <button
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                if (!confirm("Удалить сообщение?")) return;
-                                try {
-                                  await api(`/api/messages/${selected!.id}/delete/${m.id}`, { method: "DELETE" });
-                                  setMessages((prev) => prev.map((msg) => msg.id === m.id ? { ...msg, is_deleted: true } : msg));
-                                } catch {}
-                              }}
-                              className="hover:text-red-400 transition-colors"
-                              title="Удалить"
-                            >
-                              🗑
                             </button>
                           )}
                           {m.is_edited && (
@@ -1621,6 +1671,45 @@ function ChatsContent() {
               );
             })()}
 
+            {/* Pending files preview */}
+            {pendingFiles.length > 0 && (
+              <div className="px-3 py-2 border-t border-surface-border/50 bg-surface/50 shrink-0 animate-slide-up">
+                <div className="flex items-center gap-2 overflow-x-auto">
+                  {pendingFiles.map((file, idx) => (
+                    <div key={idx} className="relative shrink-0 group">
+                      {file.type.startsWith("image/") ? (
+                        <img src={URL.createObjectURL(file)} alt="" className="w-16 h-16 rounded-lg object-cover border border-surface-border" />
+                      ) : file.type.startsWith("video/") ? (
+                        <div className="w-16 h-16 rounded-lg border border-surface-border bg-surface-card flex items-center justify-center">
+                          <svg className="w-6 h-6 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                        </div>
+                      ) : (
+                        <div className="w-16 h-16 rounded-lg border border-surface-border bg-surface-card flex flex-col items-center justify-center p-1">
+                          <svg className="w-5 h-5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+                          <span className="text-[8px] text-slate-500 truncate w-full text-center mt-0.5">{file.name.split('.').pop()}</span>
+                        </div>
+                      )}
+                      <button
+                        onClick={() => removePendingFile(idx)}
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                  {pendingFiles.length < 5 && (
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-16 h-16 rounded-lg border border-dashed border-surface-border flex items-center justify-center text-slate-500 hover:text-brand hover:border-brand/30 transition-colors shrink-0"
+                    >
+                      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                    </button>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1">{pendingFiles.length}/5 файлов</div>
+              </div>
+            )}
+
             {/* Input */}
             <div className="p-2 md:p-3 border-t border-surface-border bg-surface-card/30 backdrop-blur-sm shrink-0" style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0.5rem))' }}>
               <div className="flex gap-1 items-center bg-surface-card border border-surface-border rounded-2xl px-1">
@@ -1630,6 +1719,7 @@ function ChatsContent() {
                   accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.zip"
                   onChange={handleFileUpload}
                   className="hidden"
+                  multiple
                 />
                 <button
                   onClick={() => fileInputRef.current?.click()}
@@ -1640,24 +1730,77 @@ function ChatsContent() {
                     <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
                   </svg>
                 </button>
-                <button
-                  onClick={() => { setShowEmoji(!showEmoji); setShowTemplates(false); }}
-                  className={`p-2 transition-colors shrink-0 ${showEmoji ? "text-brand" : "text-slate-500 hover:text-brand"}`}
-                  title="Эмоджи"
-                >
-                  <span className="text-lg leading-none">😊</span>
-                </button>
-                <button
-                  onClick={() => { setShowTemplates(!showTemplates); setShowEmoji(false); }}
-                  className={`p-2 transition-colors shrink-0 ${showTemplates ? "text-brand" : "text-slate-500 hover:text-brand"}`}
-                  title="Шаблоны"
-                >
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-                    <polyline points="14 2 14 8 20 8" />
-                    <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
-                  </svg>
-                </button>
+
+                {/* Dropdown menu: emoji, translate, scheduled */}
+                <div className="relative input-menu-container shrink-0">
+                  <button
+                    onClick={() => { setShowInputMenu(!showInputMenu); setShowEmoji(false); setShowTemplates(false); }}
+                    className={`p-2 transition-colors ${showInputMenu ? "text-brand" : "text-slate-500 hover:text-brand"}`}
+                    title="Ещё"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" />
+                    </svg>
+                  </button>
+                  {showInputMenu && (
+                    <div className="absolute bottom-full left-0 mb-2 bg-surface-card border border-surface-border rounded-xl shadow-2xl py-1 min-w-[200px] z-50 animate-slide-up">
+                      <button
+                        onClick={() => { setShowEmoji(!showEmoji); setShowTemplates(false); setShowInputMenu(false); }}
+                        className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors"
+                      >
+                        <span className="text-base">😊</span> Эмодзи
+                      </button>
+                      <button
+                        onClick={async () => {
+                          setShowInputMenu(false);
+                          if (!text.trim()) return;
+                          setTranslatingInput(true);
+                          try {
+                            const result = await translateText(text, translateLangOut);
+                            setText(result.translated);
+                          } catch (e: any) { alert(e.message); }
+                          setTranslatingInput(false);
+                        }}
+                        disabled={!text.trim() || translatingInput}
+                        className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors disabled:opacity-40"
+                      >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 8l6 6" /><path d="M4 14l6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" />
+                          <path d="M22 22l-5-10-5 10" /><path d="M14 18h6" />
+                        </svg>
+                        Перевод ({translateLangOut.toUpperCase()})
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowInputMenu(false);
+                          setScheduleMode(true);
+                          // Default to now + 1 hour
+                          const d = new Date(Date.now() + 3600000);
+                          setScheduleDate(d.toISOString().split("T")[0]);
+                          setScheduleTime(d.toTimeString().slice(0, 5));
+                        }}
+                        className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors"
+                      >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        Отложенное сообщение
+                      </button>
+                      <button
+                        onClick={() => { setShowTemplates(!showTemplates); setShowEmoji(false); setShowInputMenu(false); }}
+                        className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors"
+                      >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                          <polyline points="14 2 14 8 20 8" />
+                          <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
+                        </svg>
+                        Шаблоны
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 <textarea
                   ref={inputRef}
                   value={text}
@@ -1689,27 +1832,8 @@ function ChatsContent() {
                   }}
                 />
                 <button
-                  onClick={async () => {
-                    if (!text.trim()) return;
-                    setTranslatingInput(true);
-                    try {
-                      const result = await translateText(text, translateLangOut);
-                      setText(result.translated);
-                    } catch (e: any) { alert(e.message); }
-                    setTranslatingInput(false);
-                  }}
-                  disabled={!text.trim() || translatingInput}
-                  className={`text-slate-500 hover:text-brand disabled:text-slate-600 transition-colors p-2 shrink-0 ${translatingInput ? "animate-pulse" : ""}`}
-                  title={`Перевести на ${translateLangOut.toUpperCase()}`}
-                >
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M5 8l6 6" /><path d="M4 14l6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" />
-                    <path d="M22 22l-5-10-5 10" /><path d="M14 18h6" />
-                  </svg>
-                </button>
-                <button
                   onClick={sendMessage}
-                  disabled={!text.trim() || sending}
+                  disabled={(!text.trim() && pendingFiles.length === 0) || sending}
                   className={`text-brand hover:text-brand-light disabled:text-slate-600 transition-colors p-2 shrink-0 ${sending ? "animate-pulse" : ""}`}
                 >
                   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
@@ -1922,6 +2046,161 @@ function ChatsContent() {
                   )}
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Context menu (right-click / long-press) */}
+      {contextMenu && (
+        <div
+          className="fixed z-[70] bg-surface-card border border-surface-border rounded-xl shadow-2xl py-1 min-w-[190px] animate-fade-in"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Reply */}
+          <button
+            onClick={() => { setReplyTo(contextMenu.message); setContextMenu(null); inputRef.current?.focus(); }}
+            className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 00-4-4H4" />
+            </svg>
+            Ответить
+          </button>
+          {/* Copy */}
+          {contextMenu.message.content && (
+            <button
+              onClick={() => { navigator.clipboard.writeText(contextMenu.message.content!); setContextMenu(null); }}
+              className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+              </svg>
+              Копировать
+            </button>
+          )}
+          {/* Translate */}
+          {contextMenu.message.content && !translations.has(contextMenu.message.id) && (
+            <button
+              onClick={() => { handleTranslate(contextMenu.message.id, contextMenu.message.content!, contextMenu.message.direction); setContextMenu(null); }}
+              className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 8l6 6" /><path d="M4 14l6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" />
+                <path d="M22 22l-5-10-5 10" /><path d="M14 18h6" />
+              </svg>
+              Перевести
+            </button>
+          )}
+          {/* Edit (outgoing only) */}
+          {contextMenu.message.direction === "outgoing" && contextMenu.message.content && !contextMenu.message.is_deleted && (
+            <button
+              onClick={() => { setEditingMsg(contextMenu.message); setEditText(contextMenu.message.content || ""); setContextMenu(null); }}
+              className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+              Редактировать
+            </button>
+          )}
+          {/* Forward */}
+          <button
+            onClick={() => {
+              setForwardMode(true);
+              setForwardSelected(new Set([contextMenu.message.id]));
+              setContextMenu(null);
+            }}
+            className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 17 20 12 15 7" /><path d="M4 18v-2a4 4 0 014-4h12" />
+            </svg>
+            Переслать
+          </button>
+          {/* Delete (outgoing only) */}
+          {contextMenu.message.direction === "outgoing" && !contextMenu.message.is_deleted && (
+            <button
+              onClick={async () => {
+                if (!confirm("Удалить сообщение?")) return;
+                try {
+                  await api(`/api/messages/${selected!.id}/delete/${contextMenu.message.id}`, { method: "DELETE" });
+                  setMessages((prev) => prev.map((msg) => msg.id === contextMenu.message.id ? { ...msg, is_deleted: true } : msg));
+                } catch {}
+                setContextMenu(null);
+              }}
+              className="w-full px-4 py-2.5 text-left text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-3 transition-colors"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+              </svg>
+              Удалить
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Scheduled message modal */}
+      {scheduleMode && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in" onClick={() => setScheduleMode(false)}>
+          <div className="bg-surface-card border border-surface-border rounded-2xl w-full max-w-sm mx-4 p-5 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold mb-1">Отложенное сообщение</h3>
+            <p className="text-xs text-slate-500 mb-4">Часовой пояс: {userTimezone}</p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-slate-400 mb-1 block">Дата</label>
+                <input
+                  type="date"
+                  value={scheduleDate}
+                  onChange={(e) => setScheduleDate(e.target.value)}
+                  className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 mb-1 block">Время</label>
+                <input
+                  type="time"
+                  value={scheduleTime}
+                  onChange={(e) => setScheduleTime(e.target.value)}
+                  className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 mb-1 block">Сообщение</label>
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Введите текст..."
+                  rows={3}
+                  className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 resize-none"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end mt-4">
+              <Button variant="ghost" onClick={() => setScheduleMode(false)}>Отмена</Button>
+              <Button
+                disabled={!text.trim() || !scheduleDate || !scheduleTime}
+                onClick={async () => {
+                  if (!selected || !text.trim() || !scheduleDate || !scheduleTime) return;
+                  try {
+                    await api(`/api/messages/${selected.id}/schedule`, {
+                      method: "POST",
+                      body: JSON.stringify({
+                        content: text.trim(),
+                        scheduled_at: `${scheduleDate}T${scheduleTime}:00`,
+                        timezone: userTimezone,
+                      }),
+                    });
+                    setText("");
+                    setScheduleMode(false);
+                    setScheduleDate("");
+                    setScheduleTime("");
+                  } catch (e: any) { alert(e.message); }
+                }}
+              >
+                Запланировать
+              </Button>
             </div>
           </div>
         </div>

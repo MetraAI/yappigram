@@ -105,6 +105,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return false;
   });
   const [isOrgTeam, setIsOrgTeam] = useState(false);
+  const [userRole, setUserRole] = useState<string | null>(null);
 
   // Init client-side state
   useEffect(() => {
@@ -131,6 +132,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .then((data: any) => {
         const isOrg = !!(data?.postforge_org_id && !data.postforge_org_id.startsWith("personal_"));
         setIsOrgTeam(isOrg);
+        setUserRole(data?.role || null);
         try { sessionStorage.setItem("crm_is_org_team", isOrg ? "1" : "0"); } catch {}
       })
       .catch(() => {});
@@ -139,7 +141,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const navItems = [
     { href: "/chats", label: "Чаты", icon: IconChat },
     { href: "/broadcasts", label: "Рассылки", icon: IconSend },
-    ...(isOrgTeam ? [{ href: "/team", label: "Команда", icon: IconTeam }] : []),
+    ...(isOrgTeam && userRole !== "operator" ? [{ href: "/team", label: "Команда", icon: IconTeam }] : []),
     { href: "/stats", label: "Статистика", icon: IconStats },
     { href: "/settings", label: "Настройки", icon: IconSettings },
   ];

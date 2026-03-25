@@ -7,6 +7,7 @@ import time
 import uuid as uuid_mod
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel as PydanticBaseModel
 from typing import Annotated
 from uuid import UUID
 
@@ -215,8 +216,16 @@ def _org_id(user: Staff) -> str | None:
 
 
 def _org_accounts_subq(user: Staff):
-    """Subquery: TgAccount IDs belonging to user's org (active only)."""
-    return select(TgAccount.id).where(TgAccount.org_id == _org_id(user), TgAccount.is_active.is_(True))
+    """Subquery: TgAccount IDs belonging to user's org (active only).
+
+    If org_id is None, returns an impossible condition (no matches)
+    to prevent cross-workspace data leakage.
+    """
+    org = _org_id(user)
+    if org is None:
+        # No org = no data. Prevents matching all NULL org_id accounts.
+        return select(TgAccount.id).where(sa_text("false"))
+    return select(TgAccount.id).where(TgAccount.org_id == org, TgAccount.is_active.is_(True))
 
 
 # ============================================================
@@ -889,7 +898,7 @@ async def approve_contact(contact_id: UUID, user: AdminUser, db: DB):
     await ws_manager.broadcast_to_admins({
         "type": "contact_approved",
         "contact_id": str(contact.id),
-    })
+    }, org_id=_org_id(user))
     return contact
 
 
@@ -907,7 +916,7 @@ async def block_contact(contact_id: UUID, user: AdminUser, db: DB):
     await ws_manager.broadcast_to_admins({
         "type": "contact_blocked",
         "contact_id": str(contact.id),
-    })
+    }, org_id=_org_id(user))
     return contact
 
 
@@ -930,7 +939,7 @@ async def delete_contact(contact_id: UUID, user: AdminUser, db: DB):
     await ws_manager.broadcast_to_admins({
         "type": "contact_deleted",
         "contact_id": str(contact_id),
-    })
+    }, org_id=_org_id(user))
     return
 
 
@@ -989,10 +998,18 @@ async def create_group_endpoint(req: CreateGroupRequest, user: AdminUser, db: DB
     from crypto import encrypt
     from telegram import generate_alias
 
-    # Resolve CRM contact IDs to real TG IDs
+    # Verify TG account belongs to user's org
+    r = await db.execute(select(TgAccount).where(TgAccount.id == req.tg_account_id, TgAccount.org_id == _org_id(user)))
+    if not r.scalar_one_or_none():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "TG account not found in your workspace")
+
+    # Resolve CRM contact IDs to real TG IDs (org-scoped)
     member_tg_ids = []
     for cid in req.member_contact_ids:
-        r = await db.execute(select(Contact).where(Contact.id == cid))
+        r = await db.execute(select(Contact).where(
+            Contact.id == cid,
+            Contact.tg_account_id.in_(_org_accounts_subq(user)),
+        ))
         c = r.scalar_one_or_none()
         if c and c.real_tg_id:
             member_tg_ids.append(c.real_tg_id)
@@ -1021,10 +1038,8 @@ async def add_member_endpoint(contact_id: UUID, req: dict, user: AdminUser, db: 
     """Add a CRM contact to a Telegram group."""
     from telegram import add_group_member
 
-    result = await db.execute(select(Contact).where(Contact.id == contact_id))
-    group = result.scalar_one_or_none()
-    if not group:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    # Verify group contact belongs to user's org
+    group = await _get_contact_with_access(contact_id, user, db)
     if group.chat_type not in ("group", "channel"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Not a group chat")
 
@@ -1032,10 +1047,8 @@ async def add_member_endpoint(contact_id: UUID, req: dict, user: AdminUser, db: 
     if not member_contact_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "member_contact_id required")
 
-    mr = await db.execute(select(Contact).where(Contact.id == member_contact_id))
-    member = mr.scalar_one_or_none()
-    if not member:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Member contact not found")
+    # Verify member contact belongs to user's org
+    member = await _get_contact_with_access(UUID(member_contact_id), user, db)
 
     try:
         await add_group_member(group.tg_account_id, group.real_tg_id, str(member.real_tg_id))
@@ -1331,6 +1344,75 @@ async def send_msg(contact_id: UUID, req: SendMessage, user: CurrentUser, db: DB
     await db.refresh(msg)
 
     return msg
+
+
+# ---------- Scheduled messages ----------
+
+class ScheduleMessageRequest(PydanticBaseModel):
+    content: str
+    scheduled_at: str  # ISO format: "2026-03-26T14:30:00"
+    timezone: str = "UTC"
+
+@app.post("/api/messages/{contact_id}/schedule")
+async def schedule_message(
+    contact_id: UUID,
+    body: ScheduleMessageRequest,
+    user: CurrentUser,
+    db: DB,
+):
+    contact = await _get_contact_with_access(contact_id, user, db)
+    if contact.status != "approved":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Contact not approved")
+
+    import zoneinfo
+    try:
+        tz = zoneinfo.ZoneInfo(body.timezone)
+    except Exception:
+        tz = timezone.utc
+
+    # Parse the scheduled time in the user's timezone, convert to UTC
+    try:
+        local_dt = datetime.fromisoformat(body.scheduled_at).replace(tzinfo=tz)
+        utc_dt = local_dt.astimezone(timezone.utc)
+    except Exception:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid datetime format")
+
+    if utc_dt <= datetime.now(timezone.utc):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Scheduled time must be in the future")
+
+    # Calculate delay in seconds
+    delay = (utc_dt - datetime.now(timezone.utc)).total_seconds()
+
+    staff_id = user.id
+    tg_account_id = contact.tg_account_id
+    real_tg_id = contact.real_tg_id
+    content = body.content
+
+    # Schedule via asyncio
+    async def _send_later():
+        await asyncio.sleep(delay)
+        async with async_session() as sdb:
+            c = await sdb.get(Contact, contact_id)
+            if not c or c.status != "approved":
+                return
+            try:
+                tg_msg_id = await send_message(tg_account_id, real_tg_id, content)
+            except Exception:
+                return
+            msg = Message(
+                contact_id=contact_id,
+                tg_message_id=tg_msg_id,
+                direction="outgoing",
+                content=content,
+                sent_by=staff_id,
+            )
+            sdb.add(msg)
+            c.last_message_at = func.now()
+            await sdb.commit()
+
+    asyncio.create_task(_send_later())
+
+    return {"status": "scheduled", "scheduled_at": utc_dt.isoformat(), "content": body.content}
 
 
 @app.post("/api/messages/{contact_id}/send-media", response_model=MessageOut)
@@ -1637,6 +1719,10 @@ async def update_staff(staff_id: UUID, req: StaffUpdate, user: AdminUser, db: DB
 @app.get("/api/staff/{staff_id}/accounts")
 async def get_staff_accounts(staff_id: UUID, user: AdminUser, db: DB):
     """Get TG accounts assigned to a staff member."""
+    # Verify staff belongs to same org
+    result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.postforge_org_id == _org_id(user)))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     result = await db.execute(
         select(StaffTgAccount.tg_account_id).where(StaffTgAccount.staff_id == staff_id)
     )
@@ -1954,6 +2040,9 @@ async def get_contact_avatar(contact_id: UUID, db: DB, token: str = Query("")):
 @app.patch("/api/messages/{contact_id}/{message_id}/edit")
 async def edit_message(contact_id: UUID, message_id: UUID, req: SendMessage, user: CurrentUser, db: DB):
     """Edit a previously sent outgoing message."""
+    # Verify contact belongs to user's org
+    contact = await _get_contact_with_access(contact_id, user, db)
+
     result = await db.execute(select(Message).where(Message.id == message_id, Message.contact_id == contact_id))
     msg = result.scalar_one_or_none()
     if not msg:
@@ -1962,12 +2051,6 @@ async def edit_message(contact_id: UUID, message_id: UUID, req: SendMessage, use
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Can only edit outgoing messages")
     if not msg.tg_message_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No Telegram message ID")
-
-    # Get contact for TG details
-    result = await db.execute(select(Contact).where(Contact.id == contact_id))
-    contact = result.scalar_one_or_none()
-    if not contact:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
 
     # Edit on Telegram
     from telegram import _clients
@@ -2002,6 +2085,9 @@ async def edit_message(contact_id: UUID, message_id: UUID, req: SendMessage, use
 @app.get("/api/messages/{contact_id}/{message_id}/edit-history", response_model=list[MessageEditHistoryOut])
 async def get_edit_history(contact_id: UUID, message_id: UUID, user: CurrentUser, db: DB):
     """Get edit history for a message."""
+    # Verify contact belongs to user's org
+    await _get_contact_with_access(contact_id, user, db)
+
     # Verify message belongs to contact
     result = await db.execute(select(Message).where(Message.id == message_id, Message.contact_id == contact_id))
     msg = result.scalar_one_or_none()
@@ -2354,7 +2440,7 @@ async def _run_broadcast(broadcast_id: UUID):
                 "sent": bc.sent_count,
                 "failed": bc.failed_count,
                 "total": bc.total_recipients,
-            })
+            }, org_id=bc.org_id)
 
             # Delay between sends
             await asyncio.sleep(bc.delay_seconds)
@@ -2369,7 +2455,7 @@ async def _run_broadcast(broadcast_id: UUID):
                 "type": "broadcast_status",
                 "broadcast_id": str(broadcast_id),
                 "status": "completed",
-            })
+            }, org_id=bc.org_id)
 
 
 # ============================================================
@@ -2770,7 +2856,7 @@ async def _handle_ws(ws: WebSocket, token: str):
             await ws.close(code=4003)
             return
 
-    await ws_manager.connect(staff_id, ws)
+    await ws_manager.connect(staff_id, ws, org_id=user.postforge_org_id)
     try:
         while True:
             data = await ws.receive_text()

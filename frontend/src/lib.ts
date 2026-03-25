@@ -122,7 +122,8 @@ export async function connectWS() {
   // Always use current origin for WS (not API URL which may be /crm-api proxy)
   const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsBase = `${wsProto}//${window.location.host}`;
-  const pathBase = window.location.pathname.match(/^\/[^/]+/)?.[0] || "";
+  // Only use /crm prefix when embedded under metra-ai.org/crm/, not on subdomain
+  const pathBase = window.location.pathname.match(/^\/(crm)\b/)?.[0] || "";
   _ws = new WebSocket(`${wsBase}${pathBase}/ws?token=${tokens.access_token}`);
 
   _ws.onopen = () => {

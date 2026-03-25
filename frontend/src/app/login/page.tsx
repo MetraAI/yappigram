@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   isTelegramWebApp, tgAuth, tgSelectWorkspace, ssoAuth,
-  getTgWebApp, getTokens, saveTokens,
+  getTgWebApp, getTokens, saveTokens, clearTokens, disconnectWS,
   type TgWorkspace,
 } from "@/lib";
 
@@ -22,6 +22,9 @@ export default function LoginPage() {
     const accessToken = hashParams?.get("access_token") || params.get("access_token");
     const refreshToken = hashParams?.get("refresh_token") || params.get("refresh_token");
     if (accessToken && refreshToken) {
+      // Clear old session completely before applying new SSO tokens
+      disconnectWS();
+      clearTokens();
       const role = hashParams?.get("role") || params.get("role") || "operator";
       saveTokens({ access_token: accessToken, refresh_token: refreshToken, role });
       const base = window.location.pathname.split("/login")[0] || "";
@@ -29,8 +32,26 @@ export default function LoginPage() {
       return;
     }
 
-    // Already authenticated — go to chats
+    // Already authenticated — but if direct navigation (not iframe), re-SSO to sync workspace
+    const isInIframe = window.self !== window.top;
     if (getTokens()?.access_token) {
+      if (!isInIframe) {
+        // Direct access: PostForge user may have changed — re-SSO using PostForge token
+        const pfToken = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
+        if (pfToken) {
+          clearTokens();
+          disconnectWS();
+          ssoAuth(pfToken).then((ok) => {
+            if (ok) {
+              const base = window.location.pathname.split("/login")[0] || "";
+              window.location.href = base + "/chats/";
+            } else {
+              setStatus("error");
+            }
+          });
+          return;
+        }
+      }
       const base = window.location.pathname.split("/chats")[0]?.split("/login")[0]?.split("/settings")[0] || "";
       window.location.href = base + "/chats/";
       return;
@@ -78,8 +99,26 @@ export default function LoginPage() {
         }
       });
     } else {
-      // Request SSO token from parent (PostForge iframe)
-      window.parent?.postMessage({ type: "crm_ready" }, window.location.origin);
+      const isInIframe = window.self !== window.top;
+      if (isInIframe) {
+        // In iframe — request SSO token from parent (PostForge)
+        window.parent?.postMessage({ type: "crm_ready" }, window.location.origin);
+      } else {
+        // Direct navigation (not iframe) — use PostForge token from shared localStorage
+        const pfToken = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
+        if (pfToken) {
+          ssoAuth(pfToken).then((ok) => {
+            if (ok) {
+              const base = window.location.pathname.split("/login")[0] || "";
+              window.location.href = base + "/chats/";
+            } else {
+              setStatus("error");
+            }
+          });
+        } else {
+          setStatus("error");
+        }
+      }
     }
 
     return () => window.removeEventListener("message", handleSsoMessage);

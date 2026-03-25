@@ -179,7 +179,15 @@ def _extract_media(msg_obj) -> tuple[str | None, str | None]:
     if msg_obj.voice:
         return "voice", ".ogg"
     if msg_obj.sticker:
-        return "sticker", None  # No file download for stickers
+        # Determine sticker format: webp (static), webm (video), tgs (animated lottie)
+        sticker_ext = ".webp"
+        if msg_obj.document and msg_obj.document.mime_type:
+            mime = msg_obj.document.mime_type
+            if "webm" in mime:
+                sticker_ext = ".webm"
+            elif "tgs" in mime or "gzip" in mime:
+                sticker_ext = ".tgs"
+        return "sticker", sticker_ext
     if msg_obj.document:
         return "document", ""
     return None, None
@@ -311,7 +319,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             await db.commit()
             await db.refresh(msg)
 
-            # Broadcast to CRM
+            # Broadcast to CRM (scoped to this account's org)
             await ws_manager.broadcast_to_admins({
                 "type": "new_message",
                 "contact_id": str(contact.id),
@@ -325,7 +333,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                     "is_deleted": False,
                     "created_at": str(msg.created_at),
                 },
-            })
+            }, org_id=account.org_id)
 
     @client.on(events.NewMessage(incoming=True))
     async def on_new_message(event):
@@ -544,7 +552,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         "type": "new_contact",
                         "contact_id": str(contact.id),
                         "alias": contact.alias,
-                    })
+                    }, org_id=account.org_id)
                     from bot import notify_new_contact
                     if is_group:
                         group_title = getattr(chat, "title", None) or ""
@@ -583,7 +591,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         "created_at": str(msg.created_at),
                     },
                 }
-                await ws_manager.broadcast_to_admins(ws_event)
+                await ws_manager.broadcast_to_admins(ws_event, org_id=account.org_id)
 
                 # Bot notification for new messages in approved chats
                 if not is_new_contact:
@@ -643,7 +651,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 "content": msg.content,
                 "inline_buttons": msg.inline_buttons,
                 "is_edited": msg.is_edited,
-            })
+            }, org_id=account.org_id)
 
     @client.on(events.MessageRead(inbox=False))
     async def on_message_read(event):
@@ -686,7 +694,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 "type": "messages_read",
                 "contact_id": str(contact.id),
                 "message_ids": msg_ids,
-            })
+            }, org_id=account.org_id)
 
     @client.on(events.MessageDeleted)
     async def on_message_deleted(event):
@@ -709,7 +717,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         "type": "message_deleted",
                         "contact_id": str(msg.contact_id),
                         "message_id": str(msg.id),
-                    })
+                    }, org_id=account.org_id)
 
     # Run client in background with auto-reconnect
     async def _run_with_reconnect():
