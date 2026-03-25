@@ -23,13 +23,16 @@ export default function LoginPage() {
     if (accessToken && refreshToken) {
       const role = params.get("role") || "operator";
       saveTokens({ access_token: accessToken, refresh_token: refreshToken, role });
-      router.replace("/chats");
+      // Use window.location for reliable navigation (router.replace can hang in iframes)
+      const base = window.location.pathname.split("/login")[0] || "";
+      window.location.href = base + "/chats/";
       return;
     }
 
     // Already authenticated — go to chats
     if (getTokens()?.access_token) {
-      router.replace("/chats");
+      const base = window.location.pathname.split("/chats")[0]?.split("/login")[0]?.split("/settings")[0] || "";
+      window.location.href = base + "/chats/";
       return;
     }
 
