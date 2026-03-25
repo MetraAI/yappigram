@@ -1221,7 +1221,12 @@ function ChatsContent() {
         >
           <div
             className="absolute bg-surface-card border border-surface-border rounded-xl shadow-xl py-1 min-w-[140px] animate-fade-in"
-            style={{ left: Math.min(contextMenu.x, window.innerWidth - 160), top: Math.min(contextMenu.y, window.innerHeight - 160) }}
+            style={{
+              left: Math.min(contextMenu.x, window.innerWidth - 170),
+              ...(contextMenu.y > window.innerHeight / 2
+                ? { bottom: window.innerHeight - contextMenu.y + 5 }
+                : { top: contextMenu.y }),
+            }}
             onClick={(e) => e.stopPropagation()}
           >
             <button
