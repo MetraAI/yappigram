@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   api,
+  archiveChat,
   connectWS,
   createGroup,
   forwardMessages,
@@ -11,6 +12,8 @@ import {
   onWSEvent,
   parseInlineButtons,
   pressInlineButton,
+  translateText,
+  unarchiveChat,
   uploadMedia,
   type Contact,
   type Message,
@@ -78,6 +81,29 @@ function ChatsContent() {
   // Fullscreen photo viewer
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
+  // Archive
+  const [showArchived, setShowArchived] = useState(false);
+
+  // Translation
+  const LANG_OPTIONS = [
+    { value: "", label: "Off" },
+    { value: "ru", label: "RU" },
+    { value: "en", label: "EN" },
+    { value: "es", label: "ES" },
+    { value: "de", label: "DE" },
+    { value: "fr", label: "FR" },
+    { value: "zh-CN", label: "ZH" },
+    { value: "ar", label: "AR" },
+    { value: "pt", label: "PT" },
+    { value: "ja", label: "JA" },
+    { value: "ko", label: "KO" },
+    { value: "uk", label: "UK" },
+    { value: "tr", label: "TR" },
+  ];
+  const [incomingLang, setIncomingLang] = useState("");
+  const [outgoingLang, setOutgoingLang] = useState("");
+  const [translations, setTranslations] = useState<Map<string, string>>(new Map());
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<Contact | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -92,10 +118,15 @@ function ChatsContent() {
   useEffect(() => { selectedRef.current = selected; }, [selected]);
   useEffect(() => { api("/api/tags").then(setAllTags).catch(console.error); }, []);
 
+  // Load contacts when archive toggle changes
   useEffect(() => {
-    api("/api/contacts?status=approved").then((data: Contact[]) =>
+    const params = showArchived ? "status=approved&archived=true" : "status=approved";
+    api(`/api/contacts?${params}`).then((data: Contact[]) =>
       setContacts(data.sort((a, b) => (b.last_message_at || "").localeCompare(a.last_message_at || "")))
     ).catch(console.error);
+  }, [showArchived]);
+
+  useEffect(() => {
     connectWS();
 
     const unsub = onWSEvent((event) => {
@@ -201,6 +232,19 @@ function ChatsContent() {
     }
   }, [messages]);
 
+  // Auto-translate incoming messages when incomingLang is set
+  useEffect(() => {
+    if (!incomingLang) { setTranslations(new Map()); return; }
+    const toTranslate = messages.filter(
+      (m) => m.direction === "incoming" && m.content && !translations.has(m.id)
+    );
+    toTranslate.forEach((m) => {
+      translateText(m.content!, incomingLang).then((t) => {
+        setTranslations((prev) => new Map(prev).set(m.id, t));
+      }).catch(console.error);
+    });
+  }, [messages, incomingLang]);
+
   // Auto-hide bot toast
   useEffect(() => {
     if (!botToast) return;
@@ -220,6 +264,7 @@ function ChatsContent() {
     try {
       const body: any = { content };
       if (replyTo) body.reply_to_msg_id = replyTo.id;
+      if (outgoingLang) body.translate_to = outgoingLang;
 
       const msg = await api(`/api/messages/${selected.id}/send`, {
         method: "POST",
@@ -378,7 +423,25 @@ function ChatsContent() {
                 </svg>
               </button>
             )}
+            <button
+              onClick={() => { setShowArchived(!showArchived); setSelected(null); setMessages([]); }}
+              className={`w-10 h-10 flex items-center justify-center border rounded-xl transition-all shrink-0 ${
+                showArchived
+                  ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                  : "bg-surface-card border-surface-border text-slate-500 hover:text-brand hover:border-brand/30"
+              }`}
+              title={showArchived ? "Show active chats" : "Show archived"}
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" />
+              </svg>
+            </button>
           </div>
+          {showArchived && (
+            <div className="px-4 py-1.5 bg-yellow-500/5 text-yellow-400 text-xs font-medium text-center">
+              Showing archived chats
+            </div>
+          )}
         </div>
         <div className="flex-1 overflow-auto">
           {filteredContacts.map((c) => (
@@ -422,6 +485,30 @@ function ChatsContent() {
                     >
                       <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={pinned.has(c.id) ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M12 17v5" /><path d="M9 2h6l-1 7h4l-7 8 1-5H8l1-10z" />
+                      </svg>
+                    </button>
+                  <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          if (showArchived) {
+                            await unarchiveChat(c.id);
+                          } else {
+                            await archiveChat(c.id);
+                          }
+                          setContacts((prev) => prev.filter((x) => x.id !== c.id));
+                          if (selected?.id === c.id) { setSelected(null); setMessages([]); }
+                        } catch (err: any) { alert(err.message); }
+                      }}
+                      className="text-slate-600 hover:text-yellow-400 transition-colors p-1"
+                      title={showArchived ? "Unarchive" : "Archive"}
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        {showArchived ? (
+                          <><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><polyline points="9 14 12 11 15 14" /></>
+                        ) : (
+                          <><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></>
+                        )}
                       </svg>
                     </button>
                   {isAdmin && (
@@ -543,6 +630,30 @@ function ChatsContent() {
                     )}
                   </div>
                 )}
+              </div>
+
+              {/* Translation selectors */}
+              <div className="hidden md:flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-slate-500">IN</span>
+                  <select
+                    value={incomingLang}
+                    onChange={(e) => { setIncomingLang(e.target.value); setTranslations(new Map()); }}
+                    className="bg-surface-card border border-surface-border rounded-lg px-1.5 py-1 text-xs focus:outline-none focus:border-brand/50 w-16"
+                  >
+                    {LANG_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-slate-500">OUT</span>
+                  <select
+                    value={outgoingLang}
+                    onChange={(e) => setOutgoingLang(e.target.value)}
+                    className="bg-surface-card border border-surface-border rounded-lg px-1.5 py-1 text-xs focus:outline-none focus:border-brand/50 w-16"
+                  >
+                    {LANG_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
               </div>
 
               {/* Add member (groups only) */}
@@ -671,11 +782,17 @@ function ChatsContent() {
                       <div
                         id={`msg-${m.id}`}
                         className={`px-3.5 py-2.5 rounded-2xl text-sm overflow-hidden break-words ${
-                          m.is_deleted ? "opacity-50" : ""
+                          m.direction === "outgoing" ? "rounded-br-md" : "rounded-bl-md"
                         } ${
-                          m.direction === "outgoing"
-                            ? "bg-gradient-to-br from-brand to-brand-dark text-white rounded-br-md shadow-[0_2px_8px_rgba(14,165,233,0.2)]"
-                            : "bg-surface-card border border-surface-border text-white rounded-bl-md"
+                          m.is_deleted
+                            ? "bg-red-900/20 border border-red-500/30 shadow-[0_0_12px_rgba(239,68,68,0.15)] text-white"
+                            : m.is_edited
+                              ? m.direction === "outgoing"
+                                ? "bg-gradient-to-br from-brand to-brand-dark text-white shadow-[0_2px_8px_rgba(14,165,233,0.2)] ring-1 ring-yellow-500/20"
+                                : "bg-yellow-900/10 border border-yellow-500/20 text-white"
+                              : m.direction === "outgoing"
+                                ? "bg-gradient-to-br from-brand to-brand-dark text-white shadow-[0_2px_8px_rgba(14,165,233,0.2)]"
+                                : "bg-surface-card border border-surface-border text-white"
                         }`}
                       >
                         {/* Forwarded from banner */}
@@ -762,6 +879,13 @@ function ChatsContent() {
 
                         {/* Content */}
                         {m.content && <span className={`break-words whitespace-pre-wrap [overflow-wrap:anywhere] ${m.is_deleted ? "line-through" : ""}`}>{m.content}</span>}
+
+                        {/* Translated text for incoming messages */}
+                        {m.direction === "incoming" && translations.has(m.id) && (
+                          <div className="mt-1 pt-1 border-t border-slate-600/30 text-xs text-sky-300/80 break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
+                            {translations.get(m.id)}
+                          </div>
+                        )}
 
                         {/* Timestamp + edited + read status */}
                         <div className={`flex items-center justify-end gap-1 text-[10px] mt-1 ${m.direction === "outgoing" ? "text-white/40" : "text-slate-500"}`}>

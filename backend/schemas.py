@@ -56,6 +56,7 @@ class ContactOut(BaseModel):
     status: str
     chat_type: str = "private"
     is_forum: bool = False
+    is_archived: bool = False
     tags: list[str]
     notes: str | None
     assigned_to: UUID | None
@@ -110,6 +111,7 @@ class MessageOut(BaseModel):
 class SendMessage(BaseModel):
     content: str | None = None
     reply_to_msg_id: UUID | None = None
+    translate_to: str | None = None
 
 class ForwardMessage(BaseModel):
     message_ids: list[UUID]

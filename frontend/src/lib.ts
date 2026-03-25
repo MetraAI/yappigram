@@ -204,6 +204,7 @@ export interface Contact {
   status: string;
   chat_type: string;
   is_forum: boolean;
+  is_archived: boolean;
   tags: string[];
   notes: string | null;
   assigned_to: string | null;
@@ -308,4 +309,20 @@ export async function pressInlineButton(contactId: string, messageId: string, ca
     method: "POST",
     body: JSON.stringify({ message_id: messageId, callback_data: callbackData }),
   });
+}
+
+export async function archiveChat(contactId: string) {
+  return api(`/api/contacts/${contactId}/archive`, { method: "POST" });
+}
+
+export async function unarchiveChat(contactId: string) {
+  return api(`/api/contacts/${contactId}/unarchive`, { method: "POST" });
+}
+
+export async function translateText(text: string, targetLang: string): Promise<string> {
+  const res = await api("/api/translate", {
+    method: "POST",
+    body: JSON.stringify({ text, target_lang: targetLang }),
+  });
+  return res.translated;
 }

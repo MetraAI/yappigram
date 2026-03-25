@@ -76,6 +76,8 @@ class Contact(Base):
     tags = Column(ARRAY(String), default=[])
     notes = Column(Text)
 
+    is_archived = Column(Boolean, default=False)
+
     created_at = Column(DateTime, default=func.now())
     approved_at = Column(DateTime, nullable=True)
     last_message_at = Column(DateTime, nullable=True)

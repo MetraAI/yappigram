@@ -207,8 +207,12 @@ async def list_contacts(
     status_filter: str | None = Query(None, alias="status"),
     assigned_to: UUID | None = None,
     tag: str | None = None,
+    archived: bool = Query(False),
 ):
     query = select(Contact)
+
+    # Filter by archive status
+    query = query.where(Contact.is_archived.is_(archived))
 
     # Operators see contacts from their assigned TG accounts
     if user.role == "operator":
@@ -285,6 +289,30 @@ async def block_contact(contact_id: UUID, user: AdminUser, db: DB):
         "type": "contact_blocked",
         "contact_id": str(contact.id),
     })
+    return contact
+
+
+@app.post("/api/contacts/{contact_id}/archive", response_model=ContactOut)
+async def archive_contact(contact_id: UUID, user: CurrentUser, db: DB):
+    result = await db.execute(select(Contact).where(Contact.id == contact_id))
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    contact.is_archived = True
+    await db.commit()
+    await db.refresh(contact)
+    return contact
+
+
+@app.post("/api/contacts/{contact_id}/unarchive", response_model=ContactOut)
+async def unarchive_contact(contact_id: UUID, user: CurrentUser, db: DB):
+    result = await db.execute(select(Contact).where(Contact.id == contact_id))
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    contact.is_archived = False
+    await db.commit()
+    await db.refresh(contact)
     return contact
 
 
@@ -483,12 +511,22 @@ async def send_msg(contact_id: UUID, req: SendMessage, user: CurrentUser, db: DB
             preview = ref_msg.content or (f"[{ref_msg.media_type}]" if ref_msg.media_type else "...")
             reply_to_content_preview = preview[:200]
 
-    # Send via Telethon
+    # Translate outgoing message if requested
+    send_content = req.content
+    if req.translate_to and req.content:
+        try:
+            from deep_translator import GoogleTranslator
+            send_content = GoogleTranslator(source="auto", target=req.translate_to).translate(req.content)
+        except Exception as e:
+            print(f"[TRANSLATE] Failed to translate outgoing: {e}")
+
+    # Send via Telethon (translated text goes to Telegram)
     tg_msg_id = await send_message(
-        contact.tg_account_id, contact.real_tg_id, req.content,
+        contact.tg_account_id, contact.real_tg_id, send_content,
         reply_to_tg_msg_id=reply_to_tg_msg_id,
     )
 
+    # Store original text in DB
     msg = Message(
         contact_id=contact.id,
         tg_message_id=tg_msg_id,
@@ -656,6 +694,25 @@ async def press_btn(contact_id: UUID, req: PressButton, user: CurrentUser, db: D
         msg.tg_message_id, cb_data,
     )
     return {"status": "ok", "response": response_text}
+
+
+# ============================================================
+# Translation
+# ============================================================
+
+@app.post("/api/translate")
+async def translate_text(req: dict, user: CurrentUser):
+    """Translate text using Google Translate."""
+    text = req.get("text", "")
+    target_lang = req.get("target_lang", "en")
+    if not text:
+        return {"translated": ""}
+    try:
+        from deep_translator import GoogleTranslator
+        translated = GoogleTranslator(source="auto", target=target_lang).translate(text)
+        return {"translated": translated}
+    except Exception as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Translation failed: {e}")
 
 
 # ============================================================

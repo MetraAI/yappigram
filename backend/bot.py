@@ -165,18 +165,8 @@ async def notify_new_message(
             if targets:
                 print(f"[NOTIFY] Found {len(targets)} operator(s) via tg_account for {contact.alias}")
 
-        # Fallback: notify admin if no operators found
-        if not targets and settings.TG_ADMIN_CHAT_ID:
-            result = await db.execute(
-                select(Staff).where(Staff.tg_user_id == settings.TG_ADMIN_CHAT_ID, Staff.is_active.is_(True))
-            )
-            admin = result.scalar_one_or_none()
-            if admin:
-                targets.append(admin)
-                print(f"[NOTIFY] Fallback: notifying admin for {contact.alias}")
-
     if not targets:
-        print(f"[NOTIFY] No operators or admin found for contact {contact.alias}")
+        print(f"[NOTIFY] No operators found for contact {contact.alias}")
         return
 
     preview = _esc((message_text or "[media]")[:100])
