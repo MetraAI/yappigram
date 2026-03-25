@@ -57,7 +57,7 @@ function QueueContent() {
   };
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
+    <div className="p-4 max-w-3xl mx-auto overflow-hidden">
       <h1 className="text-2xl font-bold mb-6 bg-gradient-to-r from-brand to-accent bg-clip-text text-transparent">
         Moderation Queue
       </h1>
@@ -98,7 +98,7 @@ function QueueContent() {
                 )}
               </div>
 
-              <div className="flex gap-2 items-center">
+              <div className="flex flex-wrap gap-2 items-center">
                 <Button onClick={() => approve(contact)} variant="primary">
                   Approve
                 </Button>
@@ -108,10 +108,10 @@ function QueueContent() {
                     onChange={(e) => {
                       if (e.target.value) approve(contact, e.target.value);
                     }}
-                    className="bg-surface-card border border-surface-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand/50 transition-all"
+                    className="bg-surface-card border border-surface-border rounded-xl px-2 py-2 text-xs focus:outline-none focus:border-brand/50 transition-all min-w-0 max-w-[160px]"
                     defaultValue=""
                   >
-                    <option value="" disabled>Approve & assign to...</option>
+                    <option value="" disabled>Assign to...</option>
                     {operators.map((op) => (
                       <option key={op.id} value={op.id}>{op.name}</option>
                     ))}
