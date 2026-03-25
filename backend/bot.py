@@ -452,18 +452,57 @@ async def cmd_add_chat(message: TgMessage):
         )
         contact = existing.scalars().first()
         if contact:
-            if contact.status == "approved":
-                await message.answer(
-                    f"✅ Чат уже одобрен\n\nПсевдоним: <b>{_esc(contact.alias)}</b>",
-                    parse_mode="HTML",
-                )
-                return
-            # Auto-approve dormant/pending/blocked
-            contact.status = "approved"
-            contact.approved_at = datetime.utcnow()
-            await db.commit()
+            was_approved = contact.status == "approved"
+            if not was_approved:
+                contact.status = "approved"
+                contact.approved_at = datetime.utcnow()
+                await db.commit()
+
+            # Always load history for existing contacts
+            try:
+                from telegram import _clients, fetch_history, sanitize_text, _extract_media, MEDIA_DIR
+                from models import Message
+                import os
+                tg_messages = await fetch_history(account.id, tg_id, limit=100)
+                saved = 0
+                for tg_msg in reversed(tg_messages):
+                    if not tg_msg or (not tg_msg.text and not tg_msg.media):
+                        continue
+                    dup = await db.execute(
+                        select(Message).where(Message.tg_message_id == tg_msg.id, Message.contact_id == contact.id)
+                    )
+                    if dup.scalars().first():
+                        continue
+                    media_type, ext = _extract_media(tg_msg)
+                    media_path = None
+                    if media_type and ext is not None:
+                        filename = f"{contact.id}_{tg_msg.id}{ext}"
+                        filepath = os.path.join(MEDIA_DIR, filename)
+                        actual = await tg_msg.download_media(file=filepath)
+                        media_path = os.path.basename(actual) if actual else filename
+                    direction = "outgoing" if tg_msg.out else "incoming"
+                    msg = Message(
+                        contact_id=contact.id,
+                        tg_message_id=tg_msg.id,
+                        direction=direction,
+                        content=sanitize_text(tg_msg.text),
+                        media_type=media_type,
+                        media_path=media_path,
+                    )
+                    db.add(msg)
+                    saved += 1
+                if saved:
+                    contact.last_message_at = datetime.utcnow()
+                    await db.commit()
+            except Exception as e:
+                print(f"[ADD] History fetch failed for existing: {e}")
+                saved = 0
+
+            status_text = "уже одобрен" if was_approved else "одобрен"
             await message.answer(
-                f"✅ Чат одобрен!\n\nПсевдоним: <b>{_esc(contact.alias)}</b>\nТеперь доступен в CRM.",
+                f"✅ Чат {status_text}!\n\n"
+                f"Псевдоним: <b>{_esc(contact.alias)}</b>\n"
+                f"Загружено новых сообщений: {saved}",
                 parse_mode="HTML",
             )
             return
