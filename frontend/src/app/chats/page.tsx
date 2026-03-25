@@ -107,8 +107,14 @@ function ChatsContent() {
     { value: "uk", label: "UK" },
     { value: "tr", label: "TR" },
   ];
-  const [incomingLang, setIncomingLang] = useState("");
-  const [outgoingLang, setOutgoingLang] = useState("");
+  const [incomingLang, setIncomingLang] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem("crm_in_lang") || "";
+  });
+  const [outgoingLang, setOutgoingLang] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem("crm_out_lang") || "";
+  });
   const [translations, setTranslations] = useState<Map<string, string>>(new Map());
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -655,7 +661,7 @@ function ChatsContent() {
                   <span className="text-[10px] text-slate-500">IN</span>
                   <select
                     value={incomingLang}
-                    onChange={(e) => { setIncomingLang(e.target.value); setTranslations(new Map()); }}
+                    onChange={(e) => { setIncomingLang(e.target.value); setTranslations(new Map()); localStorage.setItem("crm_in_lang", e.target.value); }}
                     className="bg-surface-card border border-surface-border rounded-lg px-1.5 py-1 text-xs focus:outline-none focus:border-brand/50 w-16"
                   >
                     {LANG_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -665,7 +671,7 @@ function ChatsContent() {
                   <span className="text-[10px] text-slate-500">OUT</span>
                   <select
                     value={outgoingLang}
-                    onChange={(e) => setOutgoingLang(e.target.value)}
+                    onChange={(e) => { setOutgoingLang(e.target.value); localStorage.setItem("crm_out_lang", e.target.value); }}
                     className="bg-surface-card border border-surface-border rounded-lg px-1.5 py-1 text-xs focus:outline-none focus:border-brand/50 w-16"
                   >
                     {LANG_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -916,8 +922,9 @@ function ChatsContent() {
                                 e.stopPropagation();
                                 translateText(m.content!, incomingLang).then((t) => setTranslations((prev) => new Map(prev).set(m.id, t))).catch(() => {});
                               }}
-                              className="mt-1 text-[10px] text-sky-400/70 hover:text-sky-300 transition-colors"
+                              className="mt-1.5 flex items-center gap-1 text-[11px] text-sky-400 bg-sky-400/10 hover:bg-sky-400/20 border border-sky-400/20 rounded-lg px-2 py-0.5 transition-colors"
                             >
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1"/></svg>
                               Translate
                             </button>
                           )
