@@ -55,6 +55,7 @@ from telegram import (
     delete_message,
     disconnect_account,
     edit_message,
+    fetch_history,
     forward_message,
     press_inline_button,
     send_message,
@@ -270,6 +271,82 @@ async def approve_contact(contact_id: UUID, user: AdminUser, db: DB):
     contact.approved_at = func.now()
     await db.commit()
     await db.refresh(contact)
+
+    # Fetch last 100 messages from Telegram and save to DB
+    try:
+        from telegram import sanitize_text, _extract_media, _extract_inline_buttons
+        tg_messages = await fetch_history(contact.tg_account_id, contact.real_tg_id, limit=100)
+        for msg_obj in reversed(tg_messages):  # oldest first
+            if not msg_obj or (not msg_obj.text and not msg_obj.media):
+                continue
+            # Skip duplicates
+            existing = await db.execute(
+                select(Message).where(
+                    Message.tg_message_id == msg_obj.id,
+                    Message.contact_id == contact.id,
+                )
+            )
+            if existing.scalar_one_or_none():
+                continue
+
+            direction = "outgoing" if msg_obj.out else "incoming"
+
+            # Media
+            media_type, ext = _extract_media(msg_obj)
+            media_path = None
+            if media_type and ext is not None:
+                filename = f"{contact.id}_{msg_obj.id}{ext}"
+                filepath = os.path.join(MEDIA_DIR, filename)
+                try:
+                    actual_path = await msg_obj.download_media(file=filepath)
+                    media_path = os.path.basename(actual_path) if actual_path else filename
+                except Exception:
+                    media_path = filename
+
+            # Reply-to
+            reply_to_tg_msg_id = None
+            reply_to_msg_id = None
+            reply_to_content_preview = None
+            if msg_obj.reply_to and hasattr(msg_obj.reply_to, "reply_to_msg_id") and msg_obj.reply_to.reply_to_msg_id:
+                reply_to_tg_msg_id = msg_obj.reply_to.reply_to_msg_id
+                rr = await db.execute(
+                    select(Message).where(
+                        Message.tg_message_id == reply_to_tg_msg_id,
+                        Message.contact_id == contact.id,
+                    )
+                )
+                ref_msg = rr.scalar_one_or_none()
+                if ref_msg:
+                    reply_to_msg_id = ref_msg.id
+                    preview = ref_msg.content or (f"[{ref_msg.media_type}]" if ref_msg.media_type else "...")
+                    reply_to_content_preview = sanitize_text(preview[:200])
+
+            # Forwarded from
+            forwarded_from_alias = None
+            if msg_obj.fwd_from:
+                forwarded_from_alias = "[hidden]"
+
+            # Inline buttons
+            inline_buttons_json = _extract_inline_buttons(msg_obj)
+
+            msg = Message(
+                contact_id=contact.id,
+                tg_message_id=msg_obj.id,
+                direction=direction,
+                content=sanitize_text(msg_obj.text),
+                media_type=media_type,
+                media_path=media_path,
+                reply_to_tg_msg_id=reply_to_tg_msg_id,
+                reply_to_msg_id=reply_to_msg_id,
+                reply_to_content_preview=reply_to_content_preview,
+                forwarded_from_alias=forwarded_from_alias,
+                inline_buttons=inline_buttons_json,
+            )
+            db.add(msg)
+
+        await db.commit()
+    except Exception as e:
+        print(f"[APPROVE] Failed to fetch history for {contact.id}: {e}")
 
     await ws_manager.broadcast_to_admins({
         "type": "contact_approved",

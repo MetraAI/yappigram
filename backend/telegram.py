@@ -555,6 +555,15 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
     asyncio.create_task(client.run_until_disconnected())
 
 
+async def fetch_history(account_id: UUID, tg_id: int, limit: int = 100) -> list:
+    """Fetch last N messages from a Telegram chat via Telethon."""
+    client = _clients.get(account_id)
+    if not client:
+        raise ValueError("Telegram account not connected")
+    msgs = await client.get_messages(tg_id, limit=limit)
+    return list(msgs)
+
+
 async def send_message(
     account_id: UUID,
     tg_id: int,

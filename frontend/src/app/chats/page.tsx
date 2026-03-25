@@ -276,10 +276,12 @@ function ChatsContent() {
   };
 
   const sendingRef = useRef(false);
+  const [sending, setSending] = useState(false);
   const sendMessage = async () => {
     const content = text.trim();
     if (!content || !selected || sendingRef.current) return;
     sendingRef.current = true;
+    setSending(true);
     // Clear input immediately for snappy UX
     setText("");
     setReplyTo(null);
@@ -297,7 +299,7 @@ function ChatsContent() {
         if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
-    } catch (e: any) { alert(e.message); } finally { sendingRef.current = false; }
+    } catch (e: any) { alert(e.message); } finally { sendingRef.current = false; setSending(false); }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -697,22 +699,18 @@ function ChatsContent() {
                 </button>
               )}
 
-              {/* Forward mode toggle */}
-              <button
-                onClick={() => { setForwardMode(!forwardMode); setForwardSelected(new Set()); }}
-                className={`p-2 rounded-xl border transition-all duration-200 ${
-                  forwardMode
-                    ? "bg-brand/10 border-brand/30 text-brand"
-                    : "border-surface-border text-slate-500 hover:text-brand hover:border-brand/30"
-                }`}
-                title={forwardMode ? "Cancel forward" : "Forward messages"}
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                  <polyline points="14 8 18 12 14 16" />
-                  <line x1="10" y1="12" x2="18" y2="12" />
-                </svg>
-              </button>
+              {/* Forward mode indicator (activated from context menu) */}
+              {forwardMode && (
+                <button
+                  onClick={() => { setForwardMode(false); setForwardSelected(new Set()); }}
+                  className="p-2 rounded-xl border transition-all duration-200 bg-brand/10 border-brand/30 text-brand"
+                  title="Cancel forward"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              )}
             </div>
 
             {/* Add member bar */}
@@ -762,7 +760,7 @@ function ChatsContent() {
             {/* Messages */}
             <div
               ref={messagesContainerRef}
-              className="flex-1 overflow-auto overflow-x-hidden p-4 space-y-2 relative"
+              className="flex-1 overflow-auto overflow-x-hidden p-4 space-y-2 relative animate-fade-in"
               onScroll={(e) => {
                 const el = e.currentTarget;
                 setShowScrollBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 300);
@@ -771,7 +769,7 @@ function ChatsContent() {
               {messages.map((m) => {
                 const buttons = parseInlineButtons(m.inline_buttons);
                 return (
-                  <div key={m.id} className="flex items-start gap-2">
+                  <div key={m.id} className="flex items-start gap-2 animate-fade-in">
                     {/* Forward checkbox */}
                     {forwardMode && (
                       <label className="flex items-center pt-2 cursor-pointer shrink-0">
@@ -811,7 +809,7 @@ function ChatsContent() {
 
                       <div
                         id={`msg-${m.id}`}
-                        className={`px-3.5 py-2.5 rounded-2xl text-sm overflow-hidden break-words ${
+                        className={`px-3.5 py-2.5 rounded-2xl text-sm overflow-hidden break-words transition-all duration-200 ${
                           m.direction === "outgoing" ? "rounded-br-md" : "rounded-bl-md"
                         } ${
                           m.is_deleted
@@ -1057,7 +1055,7 @@ function ChatsContent() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      sendMessage();
+                      if (!sending) sendMessage();
                     }
                   }}
                   placeholder="Type a message..."
@@ -1072,7 +1070,7 @@ function ChatsContent() {
                 />
                 <button
                   onClick={sendMessage}
-                  disabled={!text.trim()}
+                  disabled={!text.trim() || sending}
                   className="text-brand hover:text-brand-light disabled:text-slate-600 transition-colors p-2"
                 >
                   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
@@ -1232,6 +1230,17 @@ function ChatsContent() {
             >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
               Reply
+            </button>
+            <button
+              onClick={() => {
+                setForwardMode(true);
+                setForwardSelected(new Set([contextMenu.msg.id]));
+                setContextMenu(null);
+              }}
+              className="w-full px-4 py-2.5 text-sm text-left hover:bg-surface-hover transition-colors flex items-center gap-2 text-brand"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 014-4h12"/></svg>
+              Forward
             </button>
             {contextMenu.msg.direction === "outgoing" && !contextMenu.msg.is_deleted && (
               <button
