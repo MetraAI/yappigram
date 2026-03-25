@@ -156,10 +156,10 @@ async def notify_new_message(
             if op:
                 targets.append(op)
         elif acct_id:
-            # Find ALL operators via staff_tg_accounts link
+            # Find ONLY operators (not admins/super_admins) via staff_tg_accounts link
             result = await db.execute(
                 select(Staff).join(StaffTgAccount, StaffTgAccount.staff_id == Staff.id)
-                .where(StaffTgAccount.tg_account_id == acct_id, Staff.is_active.is_(True))
+                .where(StaffTgAccount.tg_account_id == acct_id, Staff.is_active.is_(True), Staff.role == "operator")
             )
             targets = list(result.scalars().all())
             if targets:

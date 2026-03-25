@@ -413,7 +413,7 @@ function ChatsContent() {
   const isGroup = selected?.chat_type === "group" || selected?.chat_type === "channel" || selected?.chat_type === "supergroup";
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden">
       {/* Contact list */}
       <div className={`w-full md:w-80 border-r border-surface-border flex flex-col bg-gradient-to-b from-surface-card/50 to-transparent ${selected ? "hidden md:flex" : ""}`}>
         <div className="p-4 border-b border-surface-border">
@@ -569,11 +569,11 @@ function ChatsContent() {
       </div>
 
       {/* Chat area */}
-      <div className={`flex-1 flex flex-col ${!selected ? "hidden md:flex" : ""}`}>
+      <div className={`flex-1 flex flex-col min-w-0 overflow-hidden ${!selected ? "hidden md:flex" : ""}`}>
         {selected ? (
           <>
             {/* Header */}
-            <div className="px-4 py-3 border-b border-surface-border bg-surface-card/30 backdrop-blur-sm flex items-center gap-3">
+            <div className="px-3 py-2.5 border-b border-surface-border bg-surface-card/30 backdrop-blur-sm flex items-center gap-2 overflow-hidden">
               <button onClick={() => setSelected(null)} className="md:hidden text-slate-400 hover:text-white transition-colors p-1">
                 <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="15 18 9 12 15 6" />

@@ -146,20 +146,24 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
     @client.on(events.NewMessage(outgoing=True))
     async def on_outgoing_message(event):
         """Capture messages sent directly from Telegram (not through CRM)."""
-        msg_obj = event.message
-        chat = await event.get_chat()
-        if not chat:
-            return
-        peer_tg_id = event.chat_id
-        # Skip messages to bot or operators (prevents notification loops)
-        if _bot_id and peer_tg_id == _bot_id:
-            return
-        if peer_tg_id in _staff_tg_ids:
-            return
+        try:
+            msg_obj = event.message
+            chat = await event.get_chat()
+            if not chat:
+                return
+            peer_tg_id = event.chat_id
+            # Skip messages to bot or operators (prevents notification loops)
+            if _bot_id and peer_tg_id == _bot_id:
+                return
+            if peer_tg_id in _staff_tg_ids:
+                return
+            await _save_outgoing(event, account, msg_obj, peer_tg_id)
+        except Exception as e:
+            print(f"[OUTGOING] Error: {e}")
 
+    async def _save_outgoing(event, account, msg_obj, peer_tg_id):
         # Wait for CRM API to finish saving (avoid duplicate if sent from CRM)
         await asyncio.sleep(1.5)
-
         async with async_session() as db:
             # Only save if contact exists and is approved
             result = await db.execute(
