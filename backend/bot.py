@@ -272,6 +272,7 @@ async def cmd_start_no_code(message: TgMessage):
             "🤖 <b>YappiGram Bot</b>\n\n"
             "Команды:\n"
             "/pending — ожидающие модерации\n"
+            "/add &lt;id&gt; — добавить чат по TG ID\n"
             "/stats — статистика\n"
             "/operators — список операторов\n"
             "/app — открыть CRM\n"
@@ -299,6 +300,7 @@ async def cmd_help(message: TgMessage):
     await message.answer(
         "📋 <b>Команды бота</b>\n\n"
         "/pending — показать клиентов, ожидающих модерации\n"
+        "/add &lt;id&gt; — добавить чат/группу по Telegram ID\n"
         "/stats — общая статистика (клиенты, операторы)\n"
         "/operators — список активных операторов\n"
         "/app — открыть CRM Mini App\n\n"
@@ -404,6 +406,163 @@ async def cmd_app(message: TgMessage):
         await message.answer("WEBAPP_URL not configured")
         return
     await message.answer("Открыть YappiGram:", reply_markup=_mini_app_button())
+
+
+@dp.message(Command("add"))
+async def cmd_add_chat(message: TgMessage):
+    """Add a chat/group by Telegram ID: /add <tg_id>"""
+    if not _is_admin(message.chat.id):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().lstrip("-").isdigit():
+        await message.answer(
+            "📝 <b>Использование:</b>\n<code>/add &lt;telegram_id&gt;</code>\n\n"
+            "Пример:\n<code>/add 123456789</code> — личный чат\n"
+            "<code>/add -1001234567890</code> — группа/канал",
+            parse_mode="HTML",
+        )
+        return
+
+    tg_id = int(parts[1].strip())
+
+    # Find active TG account
+    from models import TgAccount, StaffTgAccount
+    async with async_session() as db:
+        # Get first active account
+        acc_result = await db.execute(select(TgAccount).where(TgAccount.is_active.is_(True)).limit(1))
+        account = acc_result.scalar_one_or_none()
+        if not account:
+            await message.answer("❌ Нет подключённых TG аккаунтов")
+            return
+
+        # Check if contact already exists
+        existing = await db.execute(
+            select(Contact).where(Contact.real_tg_id == tg_id, Contact.tg_account_id == account.id)
+        )
+        contact = existing.scalars().first()
+        if contact:
+            status_emoji = {"approved": "✅", "pending": "⏳", "blocked": "❌", "dormant": "💤"}.get(contact.status, "❓")
+            await message.answer(
+                f"ℹ️ Чат уже в CRM\n\n"
+                f"Псевдоним: <b>{_esc(contact.alias)}</b>\n"
+                f"Статус: {status_emoji} {contact.status}",
+                parse_mode="HTML",
+            )
+            return
+
+    # Fetch chat info via Telethon
+    try:
+        from telegram import _clients, fetch_history, generate_alias, sanitize_text, _extract_media, MEDIA_DIR
+        from crypto import encrypt
+        import os
+
+        client = _clients.get(account.id)
+        if not client:
+            await message.answer("❌ TG аккаунт не подключён")
+            return
+
+        entity = await client.get_entity(tg_id)
+        is_group = hasattr(entity, "title")
+        chat_type = "private"
+        if is_group:
+            if getattr(entity, "megagroup", False):
+                chat_type = "supergroup"
+            elif getattr(entity, "broadcast", False):
+                chat_type = "channel"
+            else:
+                chat_type = "group"
+
+        # Generate alias
+        async with async_session() as db:
+            count_result = await db.execute(select(sqlfunc.count(Contact.id)))
+            seq = count_result.scalar() + 1
+
+            if is_group:
+                title = getattr(entity, "title", "") or ""
+                contact = Contact(
+                    tg_account_id=account.id,
+                    real_tg_id=tg_id,
+                    real_name_encrypted=encrypt(title),
+                    real_username_encrypted=encrypt(getattr(entity, "username", None) or ""),
+                    group_title_encrypted=encrypt(title),
+                    alias=generate_alias(title, seq),
+                    chat_type=chat_type,
+                    is_forum=getattr(entity, "forum", False),
+                    status="approved",
+                    approved_at=datetime.utcnow(),
+                )
+            else:
+                first_name = getattr(entity, "first_name", "") or ""
+                username = getattr(entity, "username", None)
+                contact = Contact(
+                    tg_account_id=account.id,
+                    real_tg_id=tg_id,
+                    real_name_encrypted=encrypt(first_name),
+                    real_username_encrypted=encrypt(username) if username else None,
+                    alias=generate_alias(first_name, seq),
+                    chat_type="private",
+                    status="approved",
+                    approved_at=datetime.utcnow(),
+                )
+
+            db.add(contact)
+            await db.commit()
+            await db.refresh(contact)
+
+            # Fetch history (up to 100 messages)
+            try:
+                from models import Message
+                tg_messages = await fetch_history(account.id, tg_id, limit=100)
+                saved = 0
+                for tg_msg in reversed(tg_messages):
+                    if not tg_msg or (not tg_msg.text and not tg_msg.media):
+                        continue
+                    # Skip duplicates
+                    dup = await db.execute(
+                        select(Message).where(Message.tg_message_id == tg_msg.id, Message.contact_id == contact.id)
+                    )
+                    if dup.scalars().first():
+                        continue
+
+                    media_type, ext = _extract_media(tg_msg)
+                    media_path = None
+                    if media_type and ext is not None:
+                        filename = f"{contact.id}_{tg_msg.id}{ext}"
+                        filepath = os.path.join(MEDIA_DIR, filename)
+                        actual = await tg_msg.download_media(file=filepath)
+                        media_path = os.path.basename(actual) if actual else filename
+
+                    direction = "outgoing" if tg_msg.out else "incoming"
+                    msg = Message(
+                        contact_id=contact.id,
+                        tg_message_id=tg_msg.id,
+                        direction=direction,
+                        content=sanitize_text(tg_msg.text),
+                        media_type=media_type,
+                        media_path=media_path,
+                    )
+                    db.add(msg)
+                    saved += 1
+
+                contact.last_message_at=datetime.utcnow()
+                await db.commit()
+            except Exception as e:
+                print(f"[ADD] History fetch failed: {e}")
+                saved = 0
+
+        type_label = {"group": "Группа", "supergroup": "Супергруппа", "channel": "Канал", "private": "Личный чат"}.get(chat_type, chat_type)
+        await message.answer(
+            f"✅ <b>Чат добавлен!</b>\n\n"
+            f"Тип: {type_label}\n"
+            f"Псевдоним: <b>{_esc(contact.alias)}</b>\n"
+            f"Загружено сообщений: {saved}\n\n"
+            f"Чат сразу одобрен и доступен в CRM.",
+            parse_mode="HTML",
+        )
+
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {_esc(str(e))}", parse_mode="HTML")
 
 
 # ============================================================
