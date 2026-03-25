@@ -122,6 +122,15 @@ class PressButton(BaseModel):
     callback_data: str
 
 
+class EditMessageRequest(BaseModel):
+    message_id: UUID
+    content: str
+
+
+class DeleteMessageRequest(BaseModel):
+    message_id: UUID
+
+
 # --- Telegram Account ---
 
 class TgConnectRequest(BaseModel):

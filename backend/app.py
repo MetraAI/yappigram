@@ -33,6 +33,8 @@ from schemas import (
     ContactReveal,
     ContactUpdate,
     CreateGroupRequest,
+    DeleteMessageRequest,
+    EditMessageRequest,
     ForwardMessage,
     MessageOut,
     PressButton,
@@ -696,15 +698,6 @@ async def press_btn(contact_id: UUID, req: PressButton, user: CurrentUser, db: D
         msg.tg_message_id, cb_data,
     )
     return {"status": "ok", "response": response_text}
-
-
-class EditMessageRequest(BaseModel):
-    message_id: UUID
-    content: str
-
-
-class DeleteMessageRequest(BaseModel):
-    message_id: UUID
 
 
 @app.post("/api/messages/{contact_id}/edit")
