@@ -228,6 +228,24 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             elif contact.status == "blocked":
                 return
 
+            elif contact.status == "dormant":
+                contact.status = "pending"
+                await db.commit()
+                await db.refresh(contact)
+                # Notify admin about reactivated contact
+                try:
+                    from bot import notify_new_contact
+                    if is_group:
+                        group_title = getattr(chat, "title", None) or ""
+                        await notify_new_contact(contact, group_title, None, sanitize_text(msg_obj.text), chat_type=chat_type)
+                    else:
+                        sender = await event.get_sender()
+                        fn = getattr(sender, "first_name", "") or ""
+                        un = getattr(sender, "username", None)
+                        await notify_new_contact(contact, fn, un, sanitize_text(msg_obj.text))
+                except Exception as e:
+                    print(f"[NOTIFY] Dormant->pending notify failed: {e}")
+
             # --- SENDER ALIAS (groups only) ---
             sender_tg_id_val = None
             sender_alias_val = None
@@ -351,6 +369,21 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         await notify_new_contact(contact, first_name, username, sanitized_content)
                 except Exception as e:
                     print(f"Bot notification failed: {e}")
+
+            # --- NOTIFY PENDING (existing pending contact writes again) ---
+            if contact.status == "pending" and not is_new_contact:
+                try:
+                    from bot import notify_new_contact
+                    if is_group:
+                        group_title = getattr(chat, "title", None) or ""
+                        await notify_new_contact(contact, group_title, None, sanitized_content, chat_type=chat_type)
+                    else:
+                        sender_obj = await event.get_sender()
+                        fn = getattr(sender_obj, "first_name", "") or ""
+                        un = getattr(sender_obj, "username", None)
+                        await notify_new_contact(contact, fn, un, sanitized_content)
+                except Exception as e:
+                    print(f"[NOTIFY] Pending contact notify failed: {e}")
 
             # --- WS BROADCAST ---
             if contact.status == "approved":
