@@ -411,6 +411,7 @@ async def cmd_app(message: TgMessage):
 @dp.message(Command("add"))
 async def cmd_add_chat(message: TgMessage):
     """Add a chat/group by Telegram ID: /add <tg_id>"""
+    print(f"[ADD] Command received from {message.from_user.id}: {message.text}")
     # Allow TG_ADMIN + any staff with admin/super_admin role
     is_allowed = _is_admin(message.chat.id)
     if not is_allowed:
@@ -762,6 +763,7 @@ async def on_do_assign(callback: CallbackQuery):
 
 @dp.message()
 async def reject_unknown(message: TgMessage):
+    print(f"[BOT-CATCHALL] from {message.from_user.id}: {(message.text or '')[:50]}")
     if _is_admin(message.chat.id):
         await message.answer("Неизвестная команда. Введите /help")
         return
