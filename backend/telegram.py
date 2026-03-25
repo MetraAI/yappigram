@@ -146,6 +146,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
     @client.on(events.NewMessage(outgoing=True))
     async def on_outgoing_message(event):
         """Capture messages sent directly from Telegram (not through CRM)."""
+        print(f"[OUTGOING] Caught outgoing to {event.chat_id}: {(event.message.text or '[media]')[:50]}")
         try:
             msg_obj = event.message
             chat = await event.get_chat()
