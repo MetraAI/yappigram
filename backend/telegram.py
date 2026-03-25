@@ -153,10 +153,8 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             if not chat:
                 return
             peer_tg_id = event.chat_id
-            # Skip messages to bot or operators (prevents notification loops)
+            # Skip messages to bot only (prevents notification loops)
             if _bot_id and peer_tg_id == _bot_id:
-                return
-            if peer_tg_id in _staff_tg_ids:
                 return
             await _save_outgoing(event, account, msg_obj, peer_tg_id)
         except Exception as e:
