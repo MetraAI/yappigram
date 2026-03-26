@@ -51,3 +51,10 @@ body {
 [class*="animate-"] {
   will-change: transform, opacity;
 }
+
+/* Fix mobile keyboard pushing input — scroll into view on focus */
+@media (max-width: 768px) {
+  textarea:focus, input:focus {
+    scroll-margin-bottom: 80px;
+  }
+}

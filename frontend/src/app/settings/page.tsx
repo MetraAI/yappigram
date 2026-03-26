@@ -33,6 +33,19 @@ function SettingsContent() {
     <div className="p-6 max-w-2xl mx-auto space-y-8">
       <h1 className="text-2xl font-bold bg-gradient-to-r from-brand to-accent bg-clip-text text-transparent">Настройки</h1>
 
+      {/* Dashboard link — for embedded/mini-app users */}
+      {(isTelegramWebApp() || typeof window !== "undefined" && (() => { try { return window.self !== window.top || sessionStorage.getItem("crm_is_embedded") === "1"; } catch { return true; } })()) && (
+        <button
+          onClick={() => { try { window.parent.location.href = "/"; } catch { window.location.href = "https://metra-ai.org"; } }}
+          className="w-full flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-brand/10 to-accent/5 border border-brand/20 rounded-xl text-sm font-medium text-brand hover:bg-brand/15 transition-all"
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+          Обратно в дашборд Metra AI
+        </button>
+      )}
+
       {isTelegramWebApp() && <WorkspaceSection />}
       {isAdmin && <TelegramSection />}
       <TimezoneSection />

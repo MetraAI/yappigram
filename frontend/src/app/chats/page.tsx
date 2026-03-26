@@ -1843,6 +1843,10 @@ function ChatsContent() {
                   rows={1}
                   className="flex-1 bg-transparent py-3 text-sm focus:outline-none placeholder:text-slate-600 resize-none max-h-32 overflow-y-auto"
                   style={{ height: "auto" }}
+                  onFocus={() => {
+                    // On mobile, scroll input into view when keyboard opens
+                    setTimeout(() => inputRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 300);
+                  }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement;
                     target.style.height = "auto";
@@ -2187,17 +2191,8 @@ function ChatsContent() {
                   className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50"
                 />
               </div>
-              <div>
-                <label className="text-xs text-slate-400 mb-1 block">Сообщение</label>
-                <textarea
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  placeholder="Введите текст..."
-                  rows={3}
-                  className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 resize-none"
-                />
-              </div>
             </div>
+            {!text.trim() && <p className="text-xs text-amber-400/70 mt-3">Сначала введите сообщение в поле ввода внизу</p>}
             <div className="flex gap-2 justify-end mt-4">
               <Button variant="ghost" onClick={() => setScheduleMode(false)}>Отмена</Button>
               <Button
