@@ -1400,8 +1400,21 @@ function ChatsContent() {
                           </div>
                         )}
 
-                        {/* Timestamp + edited + read status */}
+                        {/* Timestamp + translate + edited + read status */}
                         <div className={`flex items-center justify-end gap-1 text-[10px] mt-1 ${m.direction === "outgoing" ? "text-white/40" : "text-slate-500"}`}>
+                          {/* Translate button */}
+                          {m.content && !translations.has(m.id) && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleTranslate(m.id, m.content!, m.direction); }}
+                              className={`hover:text-brand transition-colors ${translating === m.id ? "animate-pulse" : ""}`}
+                              title="Перевести"
+                            >
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M5 8l6 6" /><path d="M4 14l6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" />
+                                <path d="M22 22l-5-10-5 10" /><path d="M14 18h6" />
+                              </svg>
+                            </button>
+                          )}
                           {translations.has(m.id) && (
                             <button
                               onClick={(e) => { e.stopPropagation(); setTranslations((prev) => { const n = new Map(prev); n.delete(m.id); return n; }); }}
