@@ -366,8 +366,12 @@ function ChatsContent() {
     setMessages([]);
     setLoadingMessages(true);
     api(`/api/messages/${selected.id}?limit=100`).then((msgs: Message[]) => {
-      setMessages(msgs);
-      setTimeout(() => messagesEndRef.current?.scrollIntoView(), 50);
+      const sorted = [...msgs].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      setMessages(sorted);
+      // Multiple scroll attempts for mobile reliability
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 50);
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 200);
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 500);
     }).catch(console.error).finally(() => setLoadingMessages(false));
     // Load topics for forum supergroups
     if (selected.is_forum) {
@@ -386,8 +390,10 @@ function ChatsContent() {
     setLoadingTopic(true);
     const topicParam = activeTopic !== null ? `&topic_id=${activeTopic}` : "";
     api(`/api/messages/${selected.id}?limit=100${topicParam}`).then((msgs: Message[]) => {
-      setMessages(msgs);
-      setTimeout(() => messagesEndRef.current?.scrollIntoView(), 50);
+      const sorted = [...msgs].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      setMessages(sorted);
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 50);
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 300);
     }).catch(console.error).finally(() => setLoadingTopic(false));
   }, [activeTopic]);
 
@@ -396,8 +402,9 @@ function ChatsContent() {
     const topicParam = activeTopic !== null ? `&topic_id=${activeTopic}` : "";
     const interval = setInterval(() => {
       api(`/api/messages/${selected.id}?limit=100${topicParam}`).then((msgs: Message[]) => {
+        const sorted = [...msgs].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
         setMessages((prev) => {
-          if (msgs.length !== prev.length || JSON.stringify(msgs.map(m => m.is_deleted)) !== JSON.stringify(prev.map(m => m.is_deleted))) return msgs;
+          if (sorted.length !== prev.length || JSON.stringify(sorted.map(m => m.is_deleted)) !== JSON.stringify(prev.map(m => m.is_deleted))) return sorted;
           return prev;
         });
       }).catch(() => {});
@@ -1769,26 +1776,6 @@ function ChatsContent() {
                         <span className="text-base">😊</span> Эмодзи
                       </button>
                       <button
-                        onClick={async () => {
-                          setShowInputMenu(false);
-                          if (!text.trim()) return;
-                          setTranslatingInput(true);
-                          try {
-                            const result = await translateText(text, translateLangOut);
-                            setText(result.translated);
-                          } catch (e: any) { alert(e.message); }
-                          setTranslatingInput(false);
-                        }}
-                        disabled={!text.trim() || translatingInput}
-                        className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-surface-hover flex items-center gap-3 transition-colors disabled:opacity-40"
-                      >
-                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M5 8l6 6" /><path d="M4 14l6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" />
-                          <path d="M22 22l-5-10-5 10" /><path d="M14 18h6" />
-                        </svg>
-                        Перевод ({translateLangOut.toUpperCase()})
-                      </button>
-                      <button
                         onClick={() => {
                           setShowInputMenu(false);
                           setScheduleMode(true);
@@ -1853,6 +1840,31 @@ function ChatsContent() {
                     target.style.height = Math.min(target.scrollHeight, 128) + "px";
                   }}
                 />
+                {/* Translate button — visible only when typing real text (not just spaces/numbers) */}
+                {(() => {
+                  const stripped = text.replace(/[\s\d]/g, "");
+                  return stripped.length > 0;
+                })() && (
+                  <button
+                    onClick={async () => {
+                      if (!text.trim()) return;
+                      setTranslatingInput(true);
+                      try {
+                        const result = await translateText(text, translateLangOut);
+                        setText(result.translated);
+                      } catch (e: any) { alert(e.message); }
+                      setTranslatingInput(false);
+                    }}
+                    disabled={translatingInput}
+                    className={`text-slate-500 hover:text-brand transition-colors p-2 shrink-0 ${translatingInput ? "animate-pulse" : ""}`}
+                    title={`Перевести на ${translateLangOut.toUpperCase()}`}
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 8l6 6" /><path d="M4 14l6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" />
+                      <path d="M22 22l-5-10-5 10" /><path d="M14 18h6" />
+                    </svg>
+                  </button>
+                )}
                 <button
                   onClick={sendMessage}
                   disabled={(!text.trim() && pendingFiles.length === 0) || sending}
