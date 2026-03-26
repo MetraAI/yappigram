@@ -731,7 +731,10 @@ async def tg_disconnect(account_id: UUID, user: CurrentUser, db: DB):
     await db.execute(sa_delete(TgAccount).where(TgAccount.id == account_id))
 
     await db.commit()
-    await disconnect_account(account_id)
+    try:
+        await disconnect_account(account_id)
+    except Exception:
+        pass  # Session may be expired — DB cleanup already done
     return {"status": "disconnected"}
 
 
