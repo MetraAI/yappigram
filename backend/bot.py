@@ -538,42 +538,52 @@ async def cmd_add_chat(message: TgMessage):
             else:
                 chat_type = "group"
 
-        # Generate alias
+        # Generate alias with retry on collision
         async with async_session() as db:
-            count_result = await db.execute(select(sqlfunc.count(Contact.id)))
-            seq = count_result.scalar() + 1
+            contact = None
+            for attempt in range(10):
+                count_result = await db.execute(select(sqlfunc.count(Contact.id)))
+                seq = count_result.scalar() + 1 + attempt
 
-            if is_group:
-                title = getattr(entity, "title", "") or ""
-                contact = Contact(
-                    tg_account_id=account.id,
-                    real_tg_id=tg_id,
-                    real_name_encrypted=encrypt(title),
-                    real_username_encrypted=encrypt(getattr(entity, "username", None) or ""),
-                    group_title_encrypted=encrypt(title),
-                    alias=generate_alias(title, seq),
-                    chat_type=chat_type,
-                    is_forum=getattr(entity, "forum", False),
-                    status="approved",
-                    approved_at=datetime.utcnow(),
-                )
-            else:
-                first_name = getattr(entity, "first_name", "") or ""
-                username = getattr(entity, "username", None)
-                contact = Contact(
-                    tg_account_id=account.id,
-                    real_tg_id=tg_id,
-                    real_name_encrypted=encrypt(first_name),
-                    real_username_encrypted=encrypt(username) if username else None,
-                    alias=generate_alias(first_name, seq),
-                    chat_type="private",
-                    status="approved",
-                    approved_at=datetime.utcnow(),
-                )
+                if is_group:
+                    title = getattr(entity, "title", "") or ""
+                    contact = Contact(
+                        tg_account_id=account.id,
+                        real_tg_id=tg_id,
+                        real_name_encrypted=encrypt(title),
+                        real_username_encrypted=encrypt(getattr(entity, "username", None) or ""),
+                        group_title_encrypted=encrypt(title),
+                        alias=generate_alias(title, seq),
+                        chat_type=chat_type,
+                        is_forum=getattr(entity, "forum", False),
+                        status="approved",
+                        approved_at=datetime.utcnow(),
+                    )
+                else:
+                    first_name = getattr(entity, "first_name", "") or ""
+                    username = getattr(entity, "username", None)
+                    contact = Contact(
+                        tg_account_id=account.id,
+                        real_tg_id=tg_id,
+                        real_name_encrypted=encrypt(first_name),
+                        real_username_encrypted=encrypt(username) if username else None,
+                        alias=generate_alias(first_name, seq),
+                        chat_type="private",
+                        status="approved",
+                        approved_at=datetime.utcnow(),
+                    )
 
-            db.add(contact)
-            await db.commit()
-            await db.refresh(contact)
+                db.add(contact)
+                try:
+                    await db.commit()
+                    await db.refresh(contact)
+                    break
+                except Exception:
+                    await db.rollback()
+                    contact = None
+            if not contact:
+                await message.answer("❌ Не удалось создать контакт (конфликт алиасов)")
+                return
 
             # Fetch history (up to 100 messages)
             try:
