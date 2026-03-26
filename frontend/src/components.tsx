@@ -248,7 +248,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main className={`flex-1 min-h-0 ${pathname === "/chats" ? "overflow-hidden pb-0" : "overflow-auto pb-16"} ${isTg ? "" : "md:pb-0"}`}>{children}</main>
 
       {/* Bottom nav — always visible in TG Mini App, mobile-only otherwise */}
-      <nav className={`${isTg ? "" : "md:hidden"} fixed bottom-0 left-0 right-0 bg-surface-card/95 backdrop-blur-lg border-t border-surface-border flex justify-around pt-2 z-50`} style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
+      <nav className={`${isTg ? "" : "md:hidden"} fixed bottom-0 left-0 right-0 bg-surface-card border-t border-surface-border flex justify-around pt-2 z-50`} style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
         {navItems.map((item) => {
           const Icon = item.icon;
           const active = pathname.startsWith(item.href);
