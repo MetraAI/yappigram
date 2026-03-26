@@ -276,9 +276,11 @@ async def approve_contact(contact_id: UUID, user: AdminUser, db: DB):
     try:
         from telegram import sanitize_text, _extract_media, _extract_inline_buttons
         tg_messages = await fetch_history(contact.tg_account_id, contact.real_tg_id, limit=100)
-        for msg_obj in reversed(tg_messages):  # oldest first
-            if not msg_obj or (not msg_obj.text and not msg_obj.media):
-                continue
+        sorted_msgs = sorted(
+            [m for m in tg_messages if m and (m.text or m.media)],
+            key=lambda m: m.date
+        )
+        for msg_obj in sorted_msgs:
             # Skip duplicates
             existing = await db.execute(
                 select(Message).where(
@@ -341,6 +343,7 @@ async def approve_contact(contact_id: UUID, user: AdminUser, db: DB):
                 reply_to_content_preview=reply_to_content_preview,
                 forwarded_from_alias=forwarded_from_alias,
                 inline_buttons=inline_buttons_json,
+                created_at=msg_obj.date,
             )
             db.add(msg)
 

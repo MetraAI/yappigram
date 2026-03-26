@@ -460,15 +460,18 @@ async def cmd_add_chat(message: TgMessage):
                 await db.commit()
 
             # Always load history for existing contacts
+            saved = 0
             try:
                 from telegram import _clients, fetch_history, sanitize_text, _extract_media, MEDIA_DIR
                 from models import Message
                 import os
                 tg_messages = await fetch_history(account.id, tg_id, limit=100)
-                saved = 0
-                for tg_msg in reversed(tg_messages):
-                    if not tg_msg or (not tg_msg.text and not tg_msg.media):
-                        continue
+                # Sort oldest first by Telegram message date
+                sorted_msgs = sorted(
+                    [m for m in tg_messages if m and (m.text or m.media)],
+                    key=lambda m: m.date
+                )
+                for tg_msg in sorted_msgs:
                     dup = await db.execute(
                         select(Message).where(Message.tg_message_id == tg_msg.id, Message.contact_id == contact.id)
                     )
@@ -479,8 +482,11 @@ async def cmd_add_chat(message: TgMessage):
                     if media_type and ext is not None:
                         filename = f"{contact.id}_{tg_msg.id}{ext}"
                         filepath = os.path.join(MEDIA_DIR, filename)
-                        actual = await tg_msg.download_media(file=filepath)
-                        media_path = os.path.basename(actual) if actual else filename
+                        try:
+                            actual = await tg_msg.download_media(file=filepath)
+                            media_path = os.path.basename(actual) if actual else filename
+                        except Exception:
+                            media_path = filename
                     direction = "outgoing" if tg_msg.out else "incoming"
                     msg = Message(
                         contact_id=contact.id,
@@ -489,6 +495,7 @@ async def cmd_add_chat(message: TgMessage):
                         content=sanitize_text(tg_msg.text),
                         media_type=media_type,
                         media_path=media_path,
+                        created_at=tg_msg.date,
                     )
                     db.add(msg)
                     saved += 1
@@ -497,6 +504,7 @@ async def cmd_add_chat(message: TgMessage):
                     await db.commit()
             except Exception as e:
                 print(f"[ADD] History fetch failed for existing: {e}")
+                import traceback; traceback.print_exc()
                 saved = 0
 
             status_text = "уже одобрен" if was_approved else "одобрен"
@@ -572,24 +580,26 @@ async def cmd_add_chat(message: TgMessage):
                 from models import Message
                 tg_messages = await fetch_history(account.id, tg_id, limit=100)
                 saved = 0
-                for tg_msg in reversed(tg_messages):
-                    if not tg_msg or (not tg_msg.text and not tg_msg.media):
-                        continue
-                    # Skip duplicates
+                sorted_msgs = sorted(
+                    [m for m in tg_messages if m and (m.text or m.media)],
+                    key=lambda m: m.date
+                )
+                for tg_msg in sorted_msgs:
                     dup = await db.execute(
                         select(Message).where(Message.tg_message_id == tg_msg.id, Message.contact_id == contact.id)
                     )
                     if dup.scalars().first():
                         continue
-
                     media_type, ext = _extract_media(tg_msg)
                     media_path = None
                     if media_type and ext is not None:
                         filename = f"{contact.id}_{tg_msg.id}{ext}"
                         filepath = os.path.join(MEDIA_DIR, filename)
-                        actual = await tg_msg.download_media(file=filepath)
-                        media_path = os.path.basename(actual) if actual else filename
-
+                        try:
+                            actual = await tg_msg.download_media(file=filepath)
+                            media_path = os.path.basename(actual) if actual else filename
+                        except Exception:
+                            media_path = filename
                     direction = "outgoing" if tg_msg.out else "incoming"
                     msg = Message(
                         contact_id=contact.id,
@@ -598,14 +608,15 @@ async def cmd_add_chat(message: TgMessage):
                         content=sanitize_text(tg_msg.text),
                         media_type=media_type,
                         media_path=media_path,
+                        created_at=tg_msg.date,
                     )
                     db.add(msg)
                     saved += 1
-
-                contact.last_message_at=datetime.utcnow()
+                contact.last_message_at = datetime.utcnow()
                 await db.commit()
             except Exception as e:
                 print(f"[ADD] History fetch failed: {e}")
+                import traceback; traceback.print_exc()
                 saved = 0
 
         type_label = {"group": "Группа", "supergroup": "Супергруппа", "channel": "Канал", "private": "Личный чат"}.get(chat_type, chat_type)
