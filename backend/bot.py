@@ -495,7 +495,7 @@ async def cmd_add_chat(message: TgMessage):
                         content=sanitize_text(tg_msg.text),
                         media_type=media_type,
                         media_path=media_path,
-                        created_at=tg_msg.date,
+                        created_at=tg_msg.date.replace(tzinfo=None) if tg_msg.date else None,
                     )
                     db.add(msg)
                     saved += 1
@@ -608,7 +608,7 @@ async def cmd_add_chat(message: TgMessage):
                         content=sanitize_text(tg_msg.text),
                         media_type=media_type,
                         media_path=media_path,
-                        created_at=tg_msg.date,
+                        created_at=tg_msg.date.replace(tzinfo=None) if tg_msg.date else None,
                     )
                     db.add(msg)
                     saved += 1
