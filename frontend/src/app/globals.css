@@ -28,3 +28,26 @@ body {
   scrollbar-width: thin;
   scrollbar-color: #1e293b transparent;
 }
+
+/* Mobile safe area */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+}
+
+/* Prevent rubber-band scrolling on iOS inside chat */
+.overflow-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Disable text selection highlight on mobile for messages */
+.select-none {
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Smooth page transitions */
+[class*="animate-"] {
+  will-change: transform, opacity;
+}

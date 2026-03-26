@@ -2072,8 +2072,11 @@ function ChatsContent() {
       {/* Context menu (right-click / long-press) */}
       {contextMenu && (
         <div
-          className="fixed z-[70] bg-surface-card border border-surface-border rounded-xl shadow-2xl py-1 min-w-[190px] animate-fade-in"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed z-[70] bg-surface-card border border-surface-border rounded-xl shadow-2xl py-1 min-w-[190px] max-w-[calc(100vw-16px)] animate-scale-in"
+          style={{
+            left: Math.min(contextMenu.x, window.innerWidth - 200),
+            top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 300)),
+          }}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Reply */}
