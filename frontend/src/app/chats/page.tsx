@@ -225,10 +225,14 @@ function ChatsContent() {
     fetchTgStatus().then((rawAccs) => {
       const accs = rawAccs.filter((a) => a.is_active);
       setAccountsList(accs);
-      if (accs.length >= 1 && !filterAccountId) {
-        const firstId = accs[0].id;
-        setFilterAccountId(firstId);
-        sessionStorage.setItem("crm_selected_account", firstId);
+      if (accs.length >= 1) {
+        // If no account selected or selected account is not in active list — auto-select first
+        const currentValid = filterAccountId && accs.some((a) => a.id === filterAccountId);
+        if (!currentValid) {
+          const firstId = accs[0].id;
+          setFilterAccountId(firstId);
+          sessionStorage.setItem("crm_selected_account", firstId);
+        }
       }
     }).catch(console.error);
   }, []);
