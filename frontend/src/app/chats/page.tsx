@@ -202,7 +202,18 @@ function ChatsContent() {
     if (!selectedId) { setMessages([]); return; }
     setMessages([]);
     setTranslations(new Map());
-    api(`/api/messages/${selectedId}`).then(setMessages).catch(console.error);
+    // Fetch messages with retry
+    const loadMessages = () => {
+      api(`/api/messages/${selectedId}`).then((msgs) => {
+        if (msgs && msgs.length >= 0) setMessages(msgs);
+      }).catch(() => {
+        // Retry once after 1.5s (token refresh may have kicked in)
+        setTimeout(() => {
+          api(`/api/messages/${selectedId}`).then(setMessages).catch(console.error);
+        }, 1500);
+      });
+    };
+    loadMessages();
     setReplyTo(null);
     setForwardMode(false);
     setForwardSelected(new Set());
