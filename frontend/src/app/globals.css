@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+html, body {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+}
+
 body {
   @apply bg-surface text-white;
   background-image: radial-gradient(ellipse at top, rgba(14, 165, 233, 0.08) 0%, transparent 60%);
@@ -56,5 +62,9 @@ body {
 @media (max-width: 768px) {
   textarea:focus, input:focus {
     scroll-margin-bottom: 80px;
+  }
+  /* Prevent iOS zoom on input focus (requires 16px minimum) */
+  input, textarea, select {
+    font-size: 16px !important;
   }
 }
