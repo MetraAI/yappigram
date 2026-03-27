@@ -79,6 +79,97 @@ function LazyAvatar({ contactId, alias, chatType, hasError, onError }: {
   );
 }
 
+// Custom voice message player with waveform visualization
+function VoicePlayer({ src, direction }: { src: string; direction: string }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const isOut = direction === "outgoing";
+
+  // Generate pseudo-random waveform bars from src hash
+  const bars = useRef(
+    Array.from({ length: 32 }, (_, i) => 0.15 + Math.abs(Math.sin(i * 2.7 + src.length)) * 0.85)
+  ).current;
+
+  const toggle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const a = audioRef.current;
+    if (!a) return;
+    if (playing) { a.pause(); } else { a.play(); }
+    setPlaying(!playing);
+  };
+
+  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const a = audioRef.current;
+    if (!a || !a.duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    a.currentTime = pct * a.duration;
+    setProgress(pct);
+  };
+
+  const fmt = (s: number) => {
+    if (!s || !isFinite(s)) return "0:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  return (
+    <div className="mb-2 flex items-center gap-2 min-w-[200px] max-w-[280px]">
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        onLoadedMetadata={(e) => setDuration((e.target as HTMLAudioElement).duration)}
+        onTimeUpdate={(e) => {
+          const a = e.target as HTMLAudioElement;
+          if (a.duration) setProgress(a.currentTime / a.duration);
+        }}
+        onEnded={() => { setPlaying(false); setProgress(0); }}
+      />
+      <button
+        onClick={toggle}
+        className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+          isOut ? "bg-white/20 hover:bg-white/30" : "bg-brand/20 hover:bg-brand/30"
+        }`}
+      >
+        {playing ? (
+          <svg className={`w-4 h-4 ${isOut ? "text-white" : "text-brand"}`} viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+          </svg>
+        ) : (
+          <svg className={`w-4 h-4 ml-0.5 ${isOut ? "text-white" : "text-brand"}`} viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3" />
+          </svg>
+        )}
+      </button>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-end gap-[2px] h-7 cursor-pointer" onClick={seek}>
+          {bars.map((h, i) => {
+            const filled = i / bars.length <= progress;
+            return (
+              <div
+                key={i}
+                className={`flex-1 rounded-full transition-colors duration-100 ${
+                  filled
+                    ? isOut ? "bg-white" : "bg-brand"
+                    : isOut ? "bg-white/25" : "bg-brand/25"
+                }`}
+                style={{ height: `${h * 100}%`, minWidth: 2 }}
+              />
+            );
+          })}
+        </div>
+        <div className={`text-[10px] mt-0.5 ${isOut ? "text-white/50" : "text-slate-500"}`}>
+          {playing ? fmt(audioRef.current?.currentTime || 0) : fmt(duration)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatsPage() {
   return (
     <AuthGuard>
@@ -1304,14 +1395,16 @@ function ChatsContent() {
 
                       <div
                         id={`msg-${m.id}`}
-                        className={`px-3.5 py-2.5 rounded-2xl text-sm overflow-hidden break-words ${
-                          m.is_deleted
-                            ? "bg-red-500/20 border border-red-500/40 text-red-200 rounded-br-md"
+                        className={`rounded-2xl text-sm overflow-hidden break-words ${
+                          m.media_type === "sticker"
+                            ? "bg-transparent p-1"
+                            : m.is_deleted
+                            ? "px-3.5 py-2.5 bg-red-500/20 border border-red-500/40 text-red-200 rounded-br-md"
                             : m.is_edited
-                            ? "bg-amber-500/15 border border-amber-400/40 text-amber-100 rounded-br-md"
+                            ? "px-3.5 py-2.5 bg-amber-500/15 border border-amber-400/40 text-amber-100 rounded-br-md"
                             : m.direction === "outgoing"
-                            ? "bg-gradient-to-br from-brand to-brand-dark text-white rounded-br-md shadow-[0_2px_8px_rgba(14,165,233,0.2)]"
-                            : "bg-surface-card border border-surface-border text-white rounded-bl-md"
+                            ? "px-3.5 py-2.5 bg-gradient-to-br from-brand to-brand-dark text-white rounded-br-md shadow-[0_2px_8px_rgba(14,165,233,0.2)]"
+                            : "px-3.5 py-2.5 bg-surface-card border border-surface-border text-white rounded-bl-md"
                         }`}
                       >
                         {/* Reply quote */}
@@ -1356,17 +1449,18 @@ function ChatsContent() {
                           </div>
                         )}
 
-                        {/* Sticker */}
-                        {m.media_type === "sticker" && (
-                          m.media_path ? (
-                            m.media_path.endsWith(".webm") ? (
-                              <video src={mediaUrl(m.media_path)} autoPlay loop muted playsInline className="mb-2 max-w-[200px] max-h-[200px] rounded-lg" />
-                            ) : (
-                              <img src={mediaUrl(m.media_path)} alt="" className="mb-2 max-w-[200px] max-h-[200px]" loading="lazy" />
-                            )
+                        {/* Sticker — rendered outside bubble */}
+                        {m.media_type === "sticker" && m.media_path && (
+                          m.media_path.endsWith(".webm") ? (
+                            <video src={mediaUrl(m.media_path)} autoPlay loop muted playsInline className="mb-1 w-[160px] h-[160px] object-contain" />
+                          ) : m.media_path.endsWith(".tgs") ? (
+                            <div className="mb-1 text-5xl">{m.content || "\uD83C\uDFF7\uFE0F"}</div>
                           ) : (
-                            <div className="mb-2 text-5xl">{m.content || "\uD83C\uDFF7\uFE0F"}</div>
+                            <img src={mediaUrl(m.media_path)} alt="" className="mb-1 w-[160px] h-[160px] object-contain" loading="lazy" />
                           )
+                        )}
+                        {m.media_type === "sticker" && !m.media_path && (
+                          <div className="mb-1 text-5xl">{m.content || "\uD83C\uDFF7\uFE0F"}</div>
                         )}
                         {m.media_type && m.media_type !== "sticker" && m.media_path && (
                           <div className="mb-2">
@@ -1383,7 +1477,7 @@ function ChatsContent() {
                               <video src={mediaUrl(m.media_path)} controls preload="none" className="rounded-xl max-w-full max-h-64" />
                             )}
                             {m.media_type === "voice" && (
-                              <audio src={mediaUrl(m.media_path)} controls preload="none" className="w-full" />
+                              <VoicePlayer src={mediaUrl(m.media_path)} direction={m.direction} />
                             )}
                             {m.media_type === "document" && (() => {
                               const ext = m.media_path!.split('.').pop()?.toLowerCase() || '';
