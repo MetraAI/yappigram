@@ -1449,18 +1449,9 @@ function ChatsContent() {
                           </div>
                         )}
 
-                        {/* Sticker — rendered outside bubble */}
-                        {m.media_type === "sticker" && m.media_path && (
-                          m.media_path.endsWith(".webm") ? (
-                            <video src={mediaUrl(m.media_path)} autoPlay loop muted playsInline className="mb-1 w-[160px] h-[160px] object-contain" />
-                          ) : m.media_path.endsWith(".tgs") ? (
-                            <div className="mb-1 text-5xl">{m.content || "\uD83C\uDFF7\uFE0F"}</div>
-                          ) : (
-                            <img src={mediaUrl(m.media_path)} alt="" className="mb-1 w-[160px] h-[160px] object-contain" loading="lazy" />
-                          )
-                        )}
-                        {m.media_type === "sticker" && !m.media_path && (
-                          <div className="mb-1 text-5xl">{m.content || "\uD83C\uDFF7\uFE0F"}</div>
+                        {/* Sticker — just label */}
+                        {m.media_type === "sticker" && (
+                          <div className={`text-xs italic ${m.direction === "outgoing" ? "text-white/50" : "text-slate-400"}`}>Стикер {m.content || ""}</div>
                         )}
                         {m.media_type && m.media_type !== "sticker" && m.media_path && (
                           <div className="mb-2">
@@ -1516,8 +1507,8 @@ function ChatsContent() {
 
                         {/* Timestamp + translate + edited + read status */}
                         <div className={`flex items-center justify-end gap-1 text-[10px] mt-1 ${m.direction === "outgoing" ? "text-white/40" : "text-slate-500"}`}>
-                          {/* Translate button */}
-                          {m.content && !translations.has(m.id) && (
+                          {/* Translate button — text-only messages */}
+                          {m.content && !m.media_type && !translations.has(m.id) && (
                             <button
                               onClick={(e) => { e.stopPropagation(); handleTranslate(m.id, m.content!, m.direction); }}
                               className={`hover:text-brand transition-colors ${translating === m.id ? "animate-pulse" : ""}`}
@@ -1853,17 +1844,42 @@ function ChatsContent() {
                   className="hidden"
                   multiple
                 />
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="text-slate-500 hover:text-brand transition-colors p-2 shrink-0"
-                  title="Прикрепить файл"
-                >
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-                  </svg>
-                </button>
+                <div className="relative shrink-0">
+                  {/* Translate button — floats above attach when typing real text */}
+                  {(() => { const s = text.replace(/[\s\d]/g, ""); return s.length > 0; })() && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!text.trim()) return;
+                        setTranslatingInput(true);
+                        try {
+                          const result = await translateText(text, translateLangOut);
+                          setText(result.translated);
+                        } catch (err: any) { alert(err.message); }
+                        setTranslatingInput(false);
+                      }}
+                      disabled={translatingInput}
+                      className={`absolute -top-10 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-surface-card border border-surface-border flex items-center justify-center shadow-lg hover:border-brand/40 transition-all animate-scale-in ${translatingInput ? "animate-pulse" : ""}`}
+                      title={`Перевести на ${translateLangOut.toUpperCase()}`}
+                    >
+                      <svg className="w-3.5 h-3.5 text-brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M5 8l6 6" /><path d="M4 14l6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" />
+                        <path d="M22 22l-5-10-5 10" /><path d="M14 18h6" />
+                      </svg>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-slate-500 hover:text-brand transition-colors p-2"
+                    title="Прикрепить файл"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                    </svg>
+                  </button>
+                </div>
 
-                {/* Dropdown menu: emoji, translate, scheduled */}
+                {/* Dropdown menu: emoji, scheduled */}
                 <div className="relative input-menu-container shrink-0">
                   <button
                     onClick={() => { setShowInputMenu(!showInputMenu); setShowEmoji(false); setShowTemplates(false); }}
@@ -1947,31 +1963,6 @@ function ChatsContent() {
                     target.style.height = Math.min(target.scrollHeight, 128) + "px";
                   }}
                 />
-                {/* Translate button — visible only when typing real text (not just spaces/numbers) */}
-                {(() => {
-                  const stripped = text.replace(/[\s\d]/g, "");
-                  return stripped.length > 0;
-                })() && (
-                  <button
-                    onClick={async () => {
-                      if (!text.trim()) return;
-                      setTranslatingInput(true);
-                      try {
-                        const result = await translateText(text, translateLangOut);
-                        setText(result.translated);
-                      } catch (e: any) { alert(e.message); }
-                      setTranslatingInput(false);
-                    }}
-                    disabled={translatingInput}
-                    className={`text-slate-500 hover:text-brand transition-colors p-2 shrink-0 ${translatingInput ? "animate-pulse" : ""}`}
-                    title={`Перевести на ${translateLangOut.toUpperCase()}`}
-                  >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M5 8l6 6" /><path d="M4 14l6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" />
-                      <path d="M22 22l-5-10-5 10" /><path d="M14 18h6" />
-                    </svg>
-                  </button>
-                )}
                 <button
                   onClick={sendMessage}
                   disabled={(!text.trim() && pendingFiles.length === 0) || sending}
