@@ -878,7 +878,9 @@ function ChatsContent() {
       const ap = pinned.has(a.id) ? 1 : 0;
       const bp = pinned.has(b.id) ? 1 : 0;
       if (ap !== bp) return bp - ap;
-      return (b.last_message_at || "").localeCompare(a.last_message_at || "");
+      const aDate = a.last_message_at || a.created_at || "";
+      const bDate = b.last_message_at || b.created_at || "";
+      return bDate.localeCompare(aDate);
     });
 
   const isGroup = selected?.chat_type === "group" || selected?.chat_type === "channel" || selected?.chat_type === "supergroup";
