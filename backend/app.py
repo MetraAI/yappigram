@@ -1399,7 +1399,8 @@ def _parse_schedule_dt(scheduled_at: str, tz_name: str) -> datetime:
     except Exception:
         tz = timezone.utc
     local_dt = datetime.fromisoformat(scheduled_at).replace(tzinfo=tz)
-    return local_dt.astimezone(timezone.utc)
+    utc_dt = local_dt.astimezone(timezone.utc)
+    return utc_dt.replace(tzinfo=None)  # Store as naive UTC for PostgreSQL
 
 @app.post("/api/messages/{contact_id}/schedule", response_model=ScheduledMessageOut)
 async def schedule_message(contact_id: UUID, body: ScheduleMessageRequest, user: CurrentUser, db: DB):
@@ -1407,7 +1408,7 @@ async def schedule_message(contact_id: UUID, body: ScheduleMessageRequest, user:
     if contact.status != "approved":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Contact not approved")
     utc_dt = _parse_schedule_dt(body.scheduled_at, body.timezone)
-    if utc_dt <= datetime.now(timezone.utc):
+    if utc_dt <= datetime.utcnow():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Время должно быть в будущем")
     sm = ScheduledMessage(
         contact_id=contact_id, content=body.content, scheduled_at=utc_dt,
