@@ -366,15 +366,17 @@ function ChatsContent() {
     setTopics([]);
     setMessages([]);
     setLoadingMessages(true);
-    api(`/api/messages/${selected.id}?limit=100`).then((msgs: Message[]) => {
-      const sorted = [...msgs].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      setMessages(sorted);
-      // Multiple scroll attempts for mobile reliability
+    const sortMsgs = (msgs: Message[]) => [...msgs].sort((a, b) => {
+      const dt = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      if (dt !== 0) return dt;
+      return (a.tg_message_id || 0) - (b.tg_message_id || 0);
+    });
+    api(`/api/messages/${selected.id}?limit=200`).then((msgs: Message[]) => {
+      setMessages(sortMsgs(msgs));
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 50);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 200);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 500);
     }).catch(console.error).finally(() => setLoadingMessages(false));
-    // Load topics for forum supergroups
     if (selected.is_forum) {
       api(`/api/messages/${selected.id}/topics`).then(setTopics).catch(console.error);
     }
@@ -385,14 +387,19 @@ function ChatsContent() {
     api(`/api/messages/${selected.id}/read`, { method: "PATCH" }).catch(console.error);
   }, [selected]);
 
+  const sortMsgs = (msgs: Message[]) => [...msgs].sort((a, b) => {
+    const dt = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    if (dt !== 0) return dt;
+    return (a.tg_message_id || 0) - (b.tg_message_id || 0);
+  });
+
   // Reload messages when topic filter changes
   useEffect(() => {
     if (!selected) return;
     setLoadingTopic(true);
     const topicParam = activeTopic !== null ? `&topic_id=${activeTopic}` : "";
-    api(`/api/messages/${selected.id}?limit=100${topicParam}`).then((msgs: Message[]) => {
-      const sorted = [...msgs].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      setMessages(sorted);
+    api(`/api/messages/${selected.id}?limit=200${topicParam}`).then((msgs: Message[]) => {
+      setMessages(sortMsgs(msgs));
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 50);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 300);
     }).catch(console.error).finally(() => setLoadingTopic(false));
@@ -402,14 +409,14 @@ function ChatsContent() {
     if (!selected) return;
     const topicParam = activeTopic !== null ? `&topic_id=${activeTopic}` : "";
     const interval = setInterval(() => {
-      api(`/api/messages/${selected.id}?limit=100${topicParam}`).then((msgs: Message[]) => {
-        const sorted = [...msgs].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      api(`/api/messages/${selected.id}?limit=200${topicParam}`).then((msgs: Message[]) => {
+        const sorted = sortMsgs(msgs);
         setMessages((prev) => {
           if (sorted.length !== prev.length || JSON.stringify(sorted.map(m => m.is_deleted)) !== JSON.stringify(prev.map(m => m.is_deleted))) return sorted;
           return prev;
         });
       }).catch(() => {});
-    }, 3000);
+    }, 2000);
     return () => clearInterval(interval);
   }, [selected, activeTopic]);
 

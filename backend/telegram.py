@@ -337,6 +337,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
 
     @client.on(events.NewMessage(incoming=True))
     async def on_new_message(event):
+      try:
         msg_obj = event.message
         chat = await event.get_chat()
         if not chat:
@@ -605,6 +606,10 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         )
                     except Exception as e:
                         print(f"[NOTIFY] Message notification failed: {e}")
+      except Exception as e:
+        import traceback
+        print(f"[LISTENER] Error processing incoming message: {e}")
+        traceback.print_exc()
 
     @client.on(events.MessageEdited)
     async def on_message_edited(event):
