@@ -2674,11 +2674,18 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = 500) -> int:
             if peer_id == 777000:
                 continue
 
-            # Skip if contact already exists
+            # Update last_message_at for existing contacts from Telegram dialog date
             result = await db.execute(
                 select(Contact).where(Contact.tg_account_id == account_id, Contact.real_tg_id == peer_id)
             )
-            if result.scalars().first():
+            existing = result.scalars().first()
+            if existing:
+                # Sync last_message_at from Telegram if more recent
+                dialog_date = getattr(dialog, "date", None)
+                if dialog_date:
+                    tg_ts = dialog_date.replace(tzinfo=None) if dialog_date.tzinfo else dialog_date
+                    if not existing.last_message_at or tg_ts > existing.last_message_at:
+                        existing.last_message_at = tg_ts
                 continue
 
             # Determine chat type
@@ -2709,6 +2716,8 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = 500) -> int:
                 seq += 1
                 alias_base = generate_alias(name, seq)
 
+            dialog_date = getattr(dialog, "date", None)
+            last_msg_at = dialog_date.replace(tzinfo=None) if dialog_date and dialog_date.tzinfo else dialog_date
             contact = Contact(
                 tg_account_id=account_id,
                 real_tg_id=peer_id,
@@ -2720,6 +2729,7 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = 500) -> int:
                 alias=alias_base,
                 status="approved",
                 approved_at=datetime.utcnow(),
+                last_message_at=last_msg_at,
             )
             db.add(contact)
             await db.commit()
@@ -2815,6 +2825,9 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = 500) -> int:
             # Small delay to avoid overwhelming DB/Telegram
             if imported % 10 == 0:
                 await asyncio.sleep(0.5)
+
+        # Commit any last_message_at updates for existing contacts
+        await db.commit()
 
     print(f"[SYNC] Finished: imported {imported} dialogs for account {account_id}")
     return imported
