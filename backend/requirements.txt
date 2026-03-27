@@ -14,4 +14,5 @@ aiogram==3.13.0
 redis==5.1.0
 slowapi==0.1.9
 python-multipart==0.0.12
+websockets==13.1
 deep-translator==1.11.4
