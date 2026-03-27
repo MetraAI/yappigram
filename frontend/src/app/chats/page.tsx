@@ -556,6 +556,19 @@ function ChatsContent() {
     };
   }, [contextMenu]);
 
+  // Hide bottom nav when chat is open on mobile
+  useEffect(() => {
+    const nav = document.getElementById("bottom-nav");
+    if (!nav) return;
+    const isMobile = window.innerWidth < 768;
+    if (isMobile && selected) {
+      nav.style.display = "none";
+    } else {
+      nav.style.display = "";
+    }
+    return () => { nav.style.display = ""; };
+  }, [selected]);
+
   // Load scheduled messages
   useEffect(() => {
     api("/api/scheduled").then(setScheduledList).catch(() => {});
@@ -1845,7 +1858,7 @@ function ChatsContent() {
             )}
 
             {/* Input */}
-            <div className="p-2 md:p-3 border-t border-surface-border bg-surface-card/30 backdrop-blur-sm shrink-0" style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0.5rem))' }}>
+            <div className="p-2 md:p-3 border-t border-surface-border bg-surface-card backdrop-blur-sm shrink-0" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0.5rem)' }}>
               <div className="flex gap-1 items-center bg-surface-card border border-surface-border rounded-2xl px-1">
                 <input
                   ref={fileInputRef}
@@ -1976,8 +1989,8 @@ function ChatsContent() {
                   className="flex-1 bg-transparent py-3 text-sm focus:outline-none placeholder:text-slate-600 resize-none max-h-32 overflow-y-auto"
                   style={{ height: "auto" }}
                   onFocus={() => {
-                    // On mobile, scroll input into view when keyboard opens
-                    setTimeout(() => inputRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 300);
+                    // On mobile, scroll messages to bottom when keyboard opens
+                    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "instant" }), 400);
                   }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement;

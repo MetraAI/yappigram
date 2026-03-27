@@ -60,9 +60,6 @@ body {
 
 /* Fix mobile keyboard pushing input — scroll into view on focus */
 @media (max-width: 768px) {
-  textarea:focus, input:focus {
-    scroll-margin-bottom: 80px;
-  }
   /* Prevent iOS zoom on input focus (requires 16px minimum) */
   input, textarea, select {
     font-size: 16px !important;
