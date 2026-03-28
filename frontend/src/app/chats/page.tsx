@@ -200,16 +200,20 @@ function ChatsContent() {
 
   useEffect(() => {
     if (!selectedId) { setMessages([]); return; }
+    let cancelled = false;
     setMessages([]);
     setTranslations(new Map());
     // Fetch messages with retry
     const loadMessages = () => {
       api(`/api/messages/${selectedId}`).then((msgs) => {
-        if (msgs && msgs.length >= 0) setMessages(msgs);
+        if (!cancelled && msgs && msgs.length >= 0) setMessages(msgs);
       }).catch(() => {
         // Retry once after 1.5s (token refresh may have kicked in)
         setTimeout(() => {
-          api(`/api/messages/${selectedId}`).then(setMessages).catch(console.error);
+          if (cancelled) return;
+          api(`/api/messages/${selectedId}`).then((msgs) => {
+            if (!cancelled) setMessages(msgs);
+          }).catch(console.error);
         }, 1500);
       });
     };
@@ -222,19 +226,22 @@ function ChatsContent() {
     // Clear unread for this chat — persist to DB
     setUnread((prev) => { const n = new Map(prev); n.delete(selectedId); return n; });
     api(`/api/messages/${selectedId}/read`, { method: "PATCH" }).catch(console.error);
+    return () => { cancelled = true; };
   }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) return;
+    let cancelled = false;
     const interval = setInterval(() => {
       api(`/api/messages/${selectedId}`).then((msgs: Message[]) => {
+        if (cancelled) return;
         setMessages((prev) => {
           if (msgs.length !== prev.length || JSON.stringify(msgs.map(m => m.is_deleted)) !== JSON.stringify(prev.map(m => m.is_deleted))) return msgs;
           return prev;
         });
       }).catch(() => {});
     }, 3000);
-    return () => clearInterval(interval);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [selectedId]);
 
   const justOpenedChat = useRef(false);

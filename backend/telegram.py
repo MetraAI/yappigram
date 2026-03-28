@@ -214,11 +214,22 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 "contact_id": str(contact.id),
                 "message": {
                     "id": str(msg.id),
+                    "contact_id": str(contact.id),
                     "direction": "outgoing",
                     "content": msg.content,
                     "media_type": msg.media_type,
                     "media_path": msg.media_path,
+                    "sent_by": None,
+                    "is_read": False,
                     "is_deleted": False,
+                    "is_edited": False,
+                    "reply_to_msg_id": None,
+                    "reply_to_content_preview": None,
+                    "forwarded_from_alias": None,
+                    "sender_alias": None,
+                    "topic_id": None,
+                    "topic_name": None,
+                    "inline_buttons": None,
                     "created_at": str(msg.created_at),
                 },
             })
@@ -232,6 +243,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
 
         is_group = event.is_group or event.is_channel
         peer_tg_id = event.chat_id
+        print(f"[INCOMING] chat_id={peer_tg_id} is_group={is_group} text={(msg_obj.text or '[media]')[:50]}")
         is_forum = getattr(chat, "forum", False)
         if is_forum or (is_group and getattr(chat, "megagroup", False)):
             chat_type = "supergroup"
@@ -469,10 +481,15 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                     "contact_id": str(contact.id),
                     "message": {
                         "id": str(msg.id),
+                        "contact_id": str(contact.id),
                         "direction": "incoming",
                         "content": msg.content,
                         "media_type": msg.media_type,
                         "media_path": msg.media_path,
+                        "sent_by": None,
+                        "is_read": False,
+                        "is_deleted": False,
+                        "is_edited": False,
                         "reply_to_msg_id": str(msg.reply_to_msg_id) if msg.reply_to_msg_id else None,
                         "reply_to_content_preview": msg.reply_to_content_preview,
                         "forwarded_from_alias": msg.forwarded_from_alias,
@@ -480,10 +497,10 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         "topic_id": msg.topic_id,
                         "topic_name": msg.topic_name,
                         "inline_buttons": msg.inline_buttons,
-                        "is_deleted": False,
                         "created_at": str(msg.created_at),
                     },
                 }
+                print(f"[WS] Broadcasting new_message for contact={contact.alias} is_group={is_group}")
                 await ws_manager.broadcast_to_admins(ws_event)
 
                 # Bot notification for new messages in approved chats

@@ -100,10 +100,14 @@ export function connectWS() {
     _handlers.forEach((h) => h(data));
   };
 
-  _ws.onclose = () => {
+  _ws.onclose = (e) => {
     _ws = null;
-    // Reconnect after 3s
-    setTimeout(connectWS, 3000);
+    if (e.code === 4001) {
+      // Token expired — refresh before reconnecting
+      refreshTokens().then(() => setTimeout(connectWS, 500)).catch(() => setTimeout(connectWS, 5000));
+    } else {
+      setTimeout(connectWS, 3000);
+    }
   };
 }
 

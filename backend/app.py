@@ -961,9 +961,17 @@ async def create_tag(req: TagCreate, user: AdminUser, db: DB):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
-    payload = decode_token(token)
+    try:
+        payload = decode_token(token)
+    except HTTPException:
+        # Token expired/invalid — must accept before closing
+        await ws.accept()
+        await ws.close(code=4001, reason="Token expired")
+        return
+
     if payload.get("type") != "access":
-        await ws.close(code=4001)
+        await ws.accept()
+        await ws.close(code=4001, reason="Invalid token type")
         return
 
     staff_id = UUID(payload["sub"])
@@ -974,7 +982,8 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
         result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True)))
         user = result.scalar_one_or_none()
         if not user:
-            await ws.close(code=4003)
+            await ws.accept()
+            await ws.close(code=4003, reason="User not found")
             return
 
     await ws_manager.connect(staff_id, ws)
