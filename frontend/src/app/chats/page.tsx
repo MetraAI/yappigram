@@ -459,9 +459,10 @@ function ChatsContent() {
     setMessages([]);
     setLoadingMessages(true);
     const sortMsgs = (msgs: Message[]) => [...msgs].sort((a, b) => {
-      const dt = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      if (dt !== 0) return dt;
-      return (a.tg_message_id || 0) - (b.tg_message_id || 0);
+      const aId = a.tg_message_id || 0;
+      const bId = b.tg_message_id || 0;
+      if (aId && bId) return aId - bId;
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     });
     api(`/api/messages/${selected.id}?limit=200`).then((msgs: Message[]) => {
       setMessages(sortMsgs(msgs));
