@@ -341,6 +341,24 @@ async def on_startup():
         await conn.execute(sa_text(
             "UPDATE broadcasts SET org_id = (SELECT postforge_org_id FROM staff WHERE id = broadcasts.created_by) WHERE org_id IS NULL AND created_by IS NOT NULL"
         ))
+        # Clean up duplicate messages (keep oldest per contact_id + tg_message_id)
+        await conn.execute(sa_text("""
+            DELETE FROM messages WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY contact_id, tg_message_id
+                        ORDER BY created_at ASC
+                    ) AS rn
+                    FROM messages
+                    WHERE tg_message_id IS NOT NULL
+                ) sub WHERE rn > 1
+            )
+        """))
+        # Unique index to prevent future duplicates
+        await conn.execute(sa_text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_contact_tg_msg
+            ON messages (contact_id, tg_message_id) WHERE tg_message_id IS NOT NULL
+        """))
     await startup_listeners()
     asyncio.create_task(start_bot_polling())
     # Auto-sync dialogs for all connected accounts on startup
@@ -1273,7 +1291,7 @@ async def get_messages(
     query = (
         select(Message)
         .where(Message.contact_id == contact_id)
-        .order_by(Message.created_at.desc())
+        .order_by(Message.created_at.desc(), Message.tg_message_id.desc())
         .offset(offset)
         .limit(limit)
     )

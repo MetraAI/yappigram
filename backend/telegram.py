@@ -318,6 +318,16 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 else:
                     forwarded_from_alias = "[hidden]"
 
+            # Dedup check for outgoing
+            existing = await db.execute(
+                select(Message.id).where(
+                    Message.contact_id == contact.id,
+                    Message.tg_message_id == msg_obj.id,
+                ).limit(1)
+            )
+            if existing.scalar_one_or_none():
+                return  # Already saved via CRM send API
+
             sanitized_content = sanitize_text(msg_obj.text)
             # For stickers, use emoji as content fallback
             if media_type == "sticker" and not sanitized_content:
@@ -533,6 +543,16 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 else:
                     media_path = filename
 
+            # --- DEDUP CHECK ---
+            existing = await db.execute(
+                select(Message.id).where(
+                    Message.contact_id == contact.id,
+                    Message.tg_message_id == msg_obj.id,
+                ).limit(1)
+            )
+            if existing.scalar_one_or_none():
+                return  # Already saved, skip duplicate
+
             # --- SAVE MESSAGE ---
             sanitized_content = sanitize_text(msg_obj.text)
             # For stickers, use emoji as content fallback
@@ -638,7 +658,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             result = await db.execute(
                 select(Message).where(
                     Message.tg_message_id == msg_obj.id,
-                )
+                ).order_by(Message.created_at.desc()).limit(1)
             )
             msg = result.scalar_one_or_none()
             if not msg:
@@ -732,7 +752,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                     select(Message).where(
                         Message.tg_message_id == tg_msg_id,
                         Message.direction == "incoming",
-                    )
+                    ).order_by(Message.created_at.desc()).limit(1)
                 )
                 msg = result.scalar_one_or_none()
                 if msg:
