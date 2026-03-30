@@ -921,9 +921,13 @@ function ChatsContent() {
                               </div>
                             )}
                             {m.media_type === "video" && (
-                              <div className="w-56 h-40 rounded-xl overflow-hidden bg-surface-hover">
-                                <video src={mediaUrl(m.media_path)} controls className="w-full h-full object-cover" />
-                              </div>
+                              <video
+                                src={mediaUrl(m.media_path)}
+                                controls
+                                preload="metadata"
+                                playsInline
+                                className="rounded-xl max-w-[256px] max-h-[256px] bg-surface-hover"
+                              />
                             )}
                             {m.media_type === "voice" && (
                               <audio src={mediaUrl(m.media_path)} controls className="w-full" />
