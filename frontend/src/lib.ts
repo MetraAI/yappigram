@@ -12,8 +12,12 @@ interface TokenPair {
 
 export function getTokens(): TokenPair | null {
   if (typeof window === "undefined") return null;
-  const raw = localStorage.getItem("tokens");
-  return raw ? JSON.parse(raw) : null;
+  try {
+    const raw = localStorage.getItem("tokens");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function saveTokens(tokens: TokenPair) {
@@ -28,7 +32,7 @@ export function getRole(): string | null {
   return getTokens()?.role || null;
 }
 
-// Singleton refresh — prevents 4 concurrent refreshes on page load
+// Singleton refresh — prevents concurrent refreshes
 let _refreshPromise: Promise<string | null> | null = null;
 
 async function refreshTokens(): Promise<string | null> {
@@ -50,7 +54,6 @@ async function _doRefresh(): Promise<string | null> {
     });
 
     if (!res.ok) {
-      // Only clear on definitive rejection, not network errors
       if (res.status === 401 || res.status === 403) clearTokens();
       return null;
     }
@@ -59,7 +62,6 @@ async function _doRefresh(): Promise<string | null> {
     saveTokens(data);
     return data.access_token;
   } catch {
-    // Network error — don't clear tokens, just return null
     return null;
   }
 }
@@ -72,13 +74,11 @@ export async function api(path: string, options: RequestInit = {}): Promise<any>
     headers["Content-Type"] = "application/json";
   }
 
-  // Always read freshest token right before request
   const token = getTokens()?.access_token;
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   let res = await fetch(`${API}${path}`, { ...options, headers });
 
-  // Auto-refresh on 401 and retry once
   if (res.status === 401) {
     const newToken = await refreshTokens();
     if (!newToken) throw new Error("Session expired");
@@ -103,32 +103,46 @@ type WSHandler = (event: any) => void;
 
 let _ws: WebSocket | null = null;
 let _handlers: WSHandler[] = [];
+let _wsRetryCount = 0;
+let _wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let _wsIntentionallyClosed = false;
 
 export function connectWS() {
   const tokens = getTokens();
   if (!tokens?.access_token) return;
-  // Don't create if already open or connecting
   if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) return;
-  _ws = null;
+
+  // Clear any pending reconnect
+  if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+  _wsIntentionallyClosed = false;
 
   const wsUrl = API.replace("http", "ws");
-  _ws = new WebSocket(`${wsUrl}/ws?token=${tokens.access_token}`);
+  const ws = new WebSocket(`${wsUrl}/ws?token=${tokens.access_token}`);
+  _ws = ws;
 
-  _ws.onmessage = (e) => {
-    const data = JSON.parse(e.data);
-    _handlers.forEach((h) => h(data));
+  ws.onopen = () => { _wsRetryCount = 0; };
+
+  ws.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      _handlers.forEach((h) => h(data));
+    } catch { /* ignore malformed messages */ }
   };
 
-  _ws.onerror = () => {
-    // Error fires before close — just let onclose handle reconnect
-  };
+  ws.onerror = () => {};
 
-  _ws.onclose = (e) => {
+  ws.onclose = () => {
+    // Only reconnect if this is still the current WS instance
+    if (_ws !== ws) return;
     _ws = null;
-    // Always refresh token before reconnecting — prevents stale token loops
-    refreshTokens()
-      .then(() => setTimeout(connectWS, 1000))
-      .catch(() => setTimeout(connectWS, 5000));
+    if (_wsIntentionallyClosed) return;
+
+    // Exponential backoff: 1s, 2s, 4s, 8s, max 15s
+    const delay = Math.min(1000 * Math.pow(2, _wsRetryCount), 15000);
+    _wsRetryCount++;
+    _wsReconnectTimer = setTimeout(() => {
+      refreshTokens().then(() => connectWS()).catch(() => connectWS());
+    }, delay);
   };
 }
 
@@ -140,8 +154,9 @@ export function onWSEvent(handler: WSHandler): () => void {
 }
 
 export function disconnectWS() {
-  _ws?.close();
-  _ws = null;
+  _wsIntentionallyClosed = true;
+  if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+  if (_ws) { _ws.close(); _ws = null; }
   _handlers = [];
 }
 

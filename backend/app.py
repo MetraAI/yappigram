@@ -626,6 +626,32 @@ async def send_msg(contact_id: UUID, req: SendMessage, user: CurrentUser, db: DB
     await db.commit()
     await db.refresh(msg)
 
+    # Broadcast to other CRM users so they see the message in real-time
+    await ws_manager.broadcast_to_admins({
+        "type": "new_message",
+        "contact_id": str(contact.id),
+        "message": {
+            "id": str(msg.id),
+            "contact_id": str(contact.id),
+            "direction": "outgoing",
+            "content": msg.content,
+            "media_type": None,
+            "media_path": None,
+            "sent_by": str(user.id),
+            "is_read": False,
+            "is_deleted": False,
+            "is_edited": False,
+            "reply_to_msg_id": str(msg.reply_to_msg_id) if msg.reply_to_msg_id else None,
+            "reply_to_content_preview": msg.reply_to_content_preview,
+            "forwarded_from_alias": None,
+            "sender_alias": None,
+            "topic_id": None,
+            "topic_name": None,
+            "inline_buttons": None,
+            "created_at": str(msg.created_at),
+        },
+    })
+
     return msg
 
 

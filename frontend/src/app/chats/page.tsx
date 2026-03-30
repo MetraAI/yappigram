@@ -153,17 +153,19 @@ function ChatsContent() {
             .sort((a, b) => (b.last_message_at || "").localeCompare(a.last_message_at || ""))
         );
         if (isCurrentChat) {
-          // Check if near bottom BEFORE adding message
           const container = messagesContainerRef.current;
           if (container) {
             const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
             if (isNearBottom) shouldScrollRef.current = "smooth";
           }
+          const contactId = event.contact_id;
           setMessages((prev) => {
+            // Double-check: only add if this message belongs to the current chat
+            if (selectedRef.current?.id !== contactId) return prev;
             if (prev.some((m) => m.id === event.message.id)) return prev;
             return [...prev, event.message];
           });
-          api(`/api/messages/${event.contact_id}/read`, { method: "PATCH" }).catch(console.error);
+          api(`/api/messages/${contactId}/read`, { method: "PATCH" }).catch(() => {});
         } else {
           // Mark as unread + increment count
           setUnread((prev) => {
@@ -318,24 +320,32 @@ function ChatsContent() {
     if (!content || !selected || sendingRef.current) return;
     sendingRef.current = true;
     setSending(true);
+    const savedText = text;
+    const savedReply = replyTo;
     // Clear input immediately for snappy UX
     setText("");
     setReplyTo(null);
     if (inputRef.current) inputRef.current.style.height = "auto";
     try {
       const body: any = { content };
-      if (replyTo) body.reply_to_msg_id = replyTo.id;
+      if (savedReply) body.reply_to_msg_id = savedReply.id;
       if (outgoingLang) body.translate_to = outgoingLang;
 
       const msg = await api(`/api/messages/${selected.id}/send`, {
         method: "POST",
         body: JSON.stringify(body),
       });
+      shouldScrollRef.current = "smooth";
       setMessages((prev) => {
         if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
-    } catch (e: any) { alert(e.message); } finally { sendingRef.current = false; setSending(false); }
+    } catch (e: any) {
+      // Restore text on failure so user doesn't lose their message
+      setText(savedText);
+      setReplyTo(savedReply);
+      alert(e.message);
+    } finally { sendingRef.current = false; setSending(false); }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -343,7 +353,11 @@ function ChatsContent() {
     if (!file || !selected) return;
     try {
       const msg = await uploadMedia(selected.id, file, text.trim() || undefined);
-      setMessages((prev) => [...prev, msg]);
+      shouldScrollRef.current = "smooth";
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        return [...prev, msg];
+      });
       setText("");
     } catch (err: any) { alert(err.message); }
     e.target.value = "";

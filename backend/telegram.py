@@ -531,18 +531,30 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
     @client.on(events.MessageEdited)
     async def on_message_edited(event):
         msg_obj = event.message
+        peer_tg_id = event.chat_id
         async with async_session() as db:
-            # Match by tg_message_id (could be incoming or outgoing)
+            # Find the contact for this chat, then match by tg_message_id within it
+            possible_ids = list({peer_tg_id, -peer_tg_id, abs(peer_tg_id)})
+            contact_r = await db.execute(
+                select(Contact.id).where(
+                    Contact.real_tg_id.in_(possible_ids),
+                    Contact.tg_account_id == account.id,
+                )
+            )
+            contact_id = contact_r.scalar_one_or_none()
+            if not contact_id:
+                return
+
             result = await db.execute(
                 select(Message).where(
                     Message.tg_message_id == msg_obj.id,
+                    Message.contact_id == contact_id,
                 )
             )
             msg = result.scalar_one_or_none()
             if not msg:
                 return
 
-            # Update content, inline buttons, mark as edited
             msg.content = sanitize_text(msg_obj.text)
             msg.inline_buttons = _extract_inline_buttons(msg_obj)
             msg.is_edited = True
@@ -567,7 +579,6 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 result = await db.execute(
                     select(Message).where(
                         Message.tg_message_id == tg_msg_id,
-                        Message.direction == "incoming",
                     )
                 )
                 msg = result.scalar_one_or_none()
