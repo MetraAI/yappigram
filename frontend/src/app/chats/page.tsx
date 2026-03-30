@@ -238,15 +238,26 @@ function ChatsContent() {
       api(`/api/messages/${selectedId}`).then((msgs: Message[]) => {
         if (cancelled) return;
         setMessages((prev) => {
-          if (!prev.length && msgs.length) return msgs; // First load from polling
-          const prevIds = prev.map(m => m.id).join(",");
-          const newIds = msgs.map(m => m.id).join(",");
-          if (prevIds === newIds) return prev;
-          return msgs;
+          if (!prev.length && msgs.length) return msgs;
+          // Only add genuinely new messages — never reorder existing ones
+          const existingIds = new Set(prev.map(m => m.id));
+          const newMsgs = msgs.filter(m => !existingIds.has(m.id));
+          // Update flags (deleted/edited) on existing messages
+          let updated = false;
+          const merged = prev.map(p => {
+            const s = msgs.find(m => m.id === p.id);
+            if (s && (s.is_deleted !== p.is_deleted || s.is_edited !== p.is_edited || s.content !== p.content)) {
+              updated = true;
+              return { ...p, is_deleted: s.is_deleted, is_edited: s.is_edited, content: s.content };
+            }
+            return p;
+          });
+          if (newMsgs.length === 0 && !updated) return prev;
+          if (newMsgs.length === 0) return merged;
+          return [...merged, ...newMsgs];
         });
       }).catch(() => {});
     };
-    // Poll at 10s — WS is primary, this is just a safety net
     const interval = setInterval(poll, 10000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [selectedId]);
