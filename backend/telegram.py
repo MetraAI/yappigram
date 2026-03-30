@@ -594,8 +594,28 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         "message_id": str(msg.id),
                     })
 
-    # Run client in background
-    asyncio.create_task(client.run_until_disconnected())
+    # Run client in background with auto-reconnect
+    async def _keep_alive():
+        while True:
+            try:
+                await client.run_until_disconnected()
+            except Exception as e:
+                print(f"[TELETHON] Disconnected: {e}")
+            # Check if account was intentionally removed
+            if account.id not in _clients:
+                print(f"[TELETHON] Account {account.phone} removed, stopping reconnect")
+                return
+            print(f"[TELETHON] Reconnecting {account.phone}...")
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    print(f"[TELETHON] Session expired for {account.phone}, cannot reconnect")
+                    return
+                print(f"[TELETHON] Reconnected {account.phone}")
+            except Exception as e:
+                print(f"[TELETHON] Reconnect failed: {e}, retrying in 5s")
+                await asyncio.sleep(5)
+    asyncio.create_task(_keep_alive())
 
 
 async def fetch_history(account_id: UUID, tg_id: int, limit: int = 100) -> list:
@@ -618,6 +638,12 @@ async def send_message(
     client = _clients.get(account_id)
     if not client:
         raise ValueError("Telegram account not connected")
+    if not client.is_connected():
+        # Try to reconnect
+        try:
+            await client.connect()
+        except Exception:
+            raise ConnectionError("Telegram disconnected, reconnecting...")
     kwargs = {}
     if reply_to_tg_msg_id:
         kwargs["reply_to"] = reply_to_tg_msg_id
