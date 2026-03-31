@@ -299,6 +299,10 @@ async def on_startup():
                 CREATE INDEX IF NOT EXISTS ix_contacts_last_message_at ON contacts (last_message_at DESC NULLS LAST);
                 CREATE INDEX IF NOT EXISTS ix_contacts_status ON contacts (status);
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_contacts_tg_account_peer ON contacts (tg_account_id, real_tg_id);
+                -- Performance indexes for message queries
+                CREATE INDEX IF NOT EXISTS ix_messages_contact_tgmsg_desc ON messages (contact_id, tg_message_id DESC NULLS LAST);
+                CREATE INDEX IF NOT EXISTS ix_messages_unread ON messages (contact_id, direction, is_read) WHERE is_read = false AND direction = 'incoming';
+                CREATE INDEX IF NOT EXISTS ix_messages_contact_created ON messages (contact_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS ix_messages_contact_id ON messages (contact_id);
                 -- Auto-approve all pending contacts (no approval flow)
                 UPDATE contacts SET status = 'approved' WHERE status = 'pending';
@@ -2218,6 +2222,17 @@ async def translate_text(req: TranslateRequest, user: CurrentUser):
                 data = resp.json()
                 translated = "".join(part[0] for part in data[0] if part[0])
                 detected_lang = data[2] if len(data) > 2 else "unknown"
+                # If detected language matches target, flip to English or Russian
+                if isinstance(detected_lang, str) and detected_lang == req.target_lang:
+                    alt_lang = "en" if req.target_lang != "en" else "ru"
+                    resp2 = await client.get(
+                        "https://translate.googleapis.com/translate_a/single",
+                        params={"client": "gtx", "sl": "auto", "tl": alt_lang, "dt": "t", "q": req.text},
+                    )
+                    if resp2.status_code == 200:
+                        data2 = resp2.json()
+                        translated = "".join(part[0] for part in data2[0] if part[0])
+                        return {"translated": translated, "detected_lang": detected_lang}
                 return {"translated": translated, "detected_lang": detected_lang}
     except Exception as e:
         import logging
