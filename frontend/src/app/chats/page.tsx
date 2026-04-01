@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback, memo, useMemo } from "react";
 import {
   api,
   archiveContact,
@@ -169,6 +169,13 @@ function VoicePlayer({ src, direction }: { src: string; direction: string }) {
     </div>
   );
 }
+
+// Sort messages by time, fallback to tg_message_id
+const sortMsgs = (msgs: Message[]) => [...msgs].sort((a, b) => {
+  const dt = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  if (dt !== 0) return dt;
+  return (a.tg_message_id || 0) - (b.tg_message_id || 0);
+});
 
 export default function ChatsPage() {
   return (
@@ -502,11 +509,6 @@ function ChatsContent() {
     api(`/api/messages/${selected.id}/read`, { method: "PATCH" }).catch(console.error);
   }, [selected]);
 
-  const sortMsgs = (msgs: Message[]) => [...msgs].sort((a, b) => {
-    const dt = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-    if (dt !== 0) return dt;
-    return (a.tg_message_id || 0) - (b.tg_message_id || 0);
-  });
 
   // Reload messages when topic filter changes
   useEffect(() => {
@@ -914,13 +916,10 @@ function ChatsContent() {
     } catch (e: any) { console.error(e); }
   };
 
-  const filteredContacts = contacts
+  const filteredContacts = useMemo(() => contacts
     .filter((c) => {
-      // Archive filter
       if (showArchived ? !c.is_archived : c.is_archived) return false;
-      // Search filter
       if (search && !c.alias.toLowerCase().includes(search.toLowerCase())) return false;
-      // Tag filter
       if (filterTag && !c.tags.includes(filterTag)) return false;
       return true;
     })
@@ -931,7 +930,7 @@ function ChatsContent() {
       const aDate = a.last_message_at || a.created_at || "";
       const bDate = b.last_message_at || b.created_at || "";
       return bDate.localeCompare(aDate);
-    });
+    }), [contacts, showArchived, search, filterTag, pinned]);
 
   const isGroup = selected?.chat_type === "group" || selected?.chat_type === "channel" || selected?.chat_type === "supergroup";
 
@@ -2009,11 +2008,12 @@ function ChatsContent() {
                   onChange={(e) => {
                     const val = e.target.value;
                     setText(val);
-                    // Auto-show templates when typing /
-                    if (val.startsWith("/") && val.length >= 1) {
+                    // Auto-show templates when typing / (only toggle when state actually changes)
+                    const shouldShow = val.startsWith("/") && val.length >= 1;
+                    if (shouldShow && !showTemplates) {
                       setShowTemplates(true);
                       setShowEmoji(false);
-                    } else if (showTemplates && !val.startsWith("/")) {
+                    } else if (!shouldShow && showTemplates) {
                       setShowTemplates(false);
                     }
                   }}
