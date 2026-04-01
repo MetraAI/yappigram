@@ -205,7 +205,7 @@ function ChatsContent() {
   // User timezone for formatting times
   const [userTimezone, setUserTimezone] = useState(() => {
     if (typeof window === "undefined") return "UTC";
-    return sessionStorage.getItem("crm_timezone") || "UTC";
+    return localStorage.getItem("crm_timezone") || "UTC";
   });
 
   // Create group
@@ -322,7 +322,7 @@ function ChatsContent() {
       if (me?.role) setRole(me.role);
       if (me?.timezone) {
         setUserTimezone(me.timezone);
-        try { sessionStorage.setItem("crm_timezone", me.timezone); } catch {}
+        try { localStorage.setItem("crm_timezone", me.timezone); } catch {}
       }
     }).catch(() => {});
   }, []);
@@ -1897,7 +1897,7 @@ function ChatsContent() {
             )}
 
             {/* Input */}
-            <div className="p-2 md:p-3 border-t border-surface-border bg-surface-card backdrop-blur-sm shrink-0">
+            <div className="px-2 py-1.5 md:p-3 border-t border-surface-border bg-surface-card shrink-0">
               <div className="flex gap-1 items-center bg-surface-card border border-surface-border rounded-2xl px-1">
                 <input
                   ref={fileInputRef}
