@@ -11,6 +11,28 @@ from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 
 from config import settings
 from crypto import encrypt
+
+
+def _compress_photo(filepath: str) -> str:
+    """Compress photo to JPEG 85% quality. Returns new path."""
+    try:
+        from PIL import Image
+        img = Image.open(filepath)
+        if img.mode == "RGBA":
+            img = img.convert("RGB")
+        # Resize if too large (max 2048px on longest side)
+        max_dim = 2048
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        # Save as JPEG
+        new_path = os.path.splitext(filepath)[0] + ".jpg"
+        img.save(new_path, "JPEG", quality=85, optimize=True)
+        # Remove original if different path
+        if new_path != filepath and os.path.exists(filepath):
+            os.remove(filepath)
+        return new_path
+    except Exception:
+        return filepath
 from models import Contact, Message, MessageEditHistory, TgAccount, async_session
 from ws import ws_manager
 
@@ -296,6 +318,9 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 filepath = os.path.join(MEDIA_DIR, filename)
                 actual_path = await msg_obj.download_media(file=filepath)
                 if actual_path:
+                    # Compress photos to save disk space
+                    if media_type == "photo":
+                        actual_path = _compress_photo(actual_path)
                     media_path = os.path.basename(actual_path)
                 else:
                     media_path = filename
@@ -549,7 +574,9 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 filepath = os.path.join(MEDIA_DIR, filename)
                 actual_path = await msg_obj.download_media(file=filepath)
                 if actual_path:
-                    # Telethon may append extension for documents
+                    # Compress photos to save disk space
+                    if media_type == "photo":
+                        actual_path = _compress_photo(actual_path)
                     media_path = os.path.basename(actual_path)
                 else:
                     media_path = filename
