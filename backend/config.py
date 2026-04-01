@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # JWT
     JWT_SECRET: str = "change-me"
-    JWT_ACCESS_EXPIRE_MINUTES: int = 15
+    JWT_ACCESS_EXPIRE_MINUTES: int = 480  # 8 hours
     JWT_REFRESH_EXPIRE_DAYS: int = 30
 
     # Encryption

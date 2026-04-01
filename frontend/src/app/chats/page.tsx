@@ -191,7 +191,9 @@ function ChatsContent() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [selected, setSelected] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [text, setText] = useState("");
+  const [text, _setText] = useState("");
+  const textRef = useRef("");
+  const setText = (val: string) => { textRef.current = val; _setText(val); };
   const [search, setSearch] = useState("");
   const [editingAlias, setEditingAlias] = useState(false);
   const [aliasValue, setAliasValue] = useState("");
@@ -620,7 +622,7 @@ function ChatsContent() {
 
   const sendingRef = useRef(false);
   const sendMessage = async () => {
-    const content = text.trim();
+    const content = textRef.current.trim();
     const hasFiles = pendingFiles.length > 0;
     if ((!content && !hasFiles) || !selected || sendingRef.current) return;
     sendingRef.current = true;
