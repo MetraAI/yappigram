@@ -218,7 +218,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               );
             })}
           </div>
-          {!isEmbedded && (
+          {isEmbedded ? (
+            <button
+              onClick={() => { try { window.parent.location.href = "/"; } catch { window.location.href = "https://metra-ai.org"; } }}
+              className="flex items-center gap-2 text-sm text-emerald-400 hover:text-emerald-300 transition-colors mt-auto px-3 py-2"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+              Обратно в дашборд
+            </button>
+          ) : (
             <button
               onClick={logout}
               className="flex items-center gap-2 text-sm text-slate-500 hover:text-red-400 transition-colors mt-auto px-3 py-2"
@@ -231,7 +239,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       )}
 
       {/* Main content */}
-      <main className={`flex-1 min-h-0 ${pathname === "/chats" ? "overflow-hidden" : "overflow-auto"} ${isTg ? "" : "md:pb-0"}`} style={pathname !== "/chats" ? { paddingBottom: 52 } : undefined}>{children}</main>
+      <main className={`flex-1 min-h-0 ${pathname === "/chats" ? "overflow-hidden" : "overflow-auto pb-[52px] md:pb-0"}`}>{children}</main>
 
       {/* Bottom nav */}
       <nav className={`${isTg ? "" : "md:hidden"} ${isEmbedded && !isTg ? "hidden md:hidden" : ""} fixed bottom-0 left-0 right-0 bg-surface-card border-t border-surface-border flex justify-around z-50`} style={{ height: 52 }} id="bottom-nav">
