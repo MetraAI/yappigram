@@ -1799,7 +1799,7 @@ function ChatsContent() {
                   {["😀","😂","🤣","😊","😍","🥰","😘","😎","🤔","😢","😭","😡","🔥","❤️","👍","👎","👏","🙏","💪","🎉","✅","❌","⭐","💯","🚀","💬","📌","📎","🔗","📸","🎵","💡","⚡","🌟","💎","🏆","🤝","👀","🙂","😅","🤩","😇","🤗","😋","🤭","🥺","😏","🙄","😴","🤑","🤠","👋","✌️","🤞","👌","💀","🫡","😈","💩"].map((e) => (
                     <button
                       key={e}
-                      onClick={() => { setText((prev) => prev + e); inputRef.current?.focus(); }}
+                      onClick={() => { setText(textRef.current + e); inputRef.current?.focus(); }}
                       className="w-8 h-8 flex items-center justify-center text-lg hover:bg-surface-hover rounded-lg transition-colors"
                     >
                       {e}
