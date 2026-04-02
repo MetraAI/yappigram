@@ -191,18 +191,10 @@ function ChatsContent() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [selected, setSelected] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [text, _setText] = useState("");
+  const [text, setText] = useState("");
   const textRef = useRef("");
-  const setText = (val: string) => {
-    textRef.current = val;
-    _setText(val);
-    // Sync uncontrolled textarea
-    if (inputRef.current && inputRef.current.value !== val) {
-      inputRef.current.value = val;
-      inputRef.current.style.height = "auto";
-      inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 128) + "px";
-    }
-  };
+  // Keep ref in sync for async functions (sendMessage, translate)
+  useEffect(() => { textRef.current = text; }, [text]);
   const [search, setSearch] = useState("");
   const [editingAlias, setEditingAlias] = useState(false);
   const [aliasValue, setAliasValue] = useState("");
@@ -1799,7 +1791,7 @@ function ChatsContent() {
                   {["😀","😂","🤣","😊","😍","🥰","😘","😎","🤔","😢","😭","😡","🔥","❤️","👍","👎","👏","🙏","💪","🎉","✅","❌","⭐","💯","🚀","💬","📌","📎","🔗","📸","🎵","💡","⚡","🌟","💎","🏆","🤝","👀","🙂","😅","🤩","😇","🤗","😋","🤭","🥺","😏","🙄","😴","🤑","🤠","👋","✌️","🤞","👌","💀","🫡","😈","💩"].map((e) => (
                     <button
                       key={e}
-                      onClick={() => { setText(textRef.current + e); inputRef.current?.focus(); }}
+                      onClick={() => { setText((prev) => prev + e); inputRef.current?.focus(); }}
                       className="w-8 h-8 flex items-center justify-center text-lg hover:bg-surface-hover rounded-lg transition-colors"
                     >
                       {e}
@@ -2016,15 +2008,10 @@ function ChatsContent() {
 
                 <textarea
                   ref={inputRef}
-                  defaultValue={text}
+                  value={text}
                   onChange={(e) => {
+                    setText(e.target.value);
                     const val = e.target.value;
-                    textRef.current = val;
-                    // Debounced state update — only update when needed for UI elements
-                    const hasRealText = val.replace(/[\s\d]/g, "").length > 0;
-                    const hadRealText = text.replace(/[\s\d]/g, "").length > 0;
-                    if (hasRealText !== hadRealText) _setText(val);
-                    // Template toggle
                     const shouldShow = val.startsWith("/") && val.length >= 1;
                     if (shouldShow && !showTemplates) {
                       setShowTemplates(true);
