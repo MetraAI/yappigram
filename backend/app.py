@@ -239,6 +239,7 @@ async def serve_media(file_path: str):
 DB = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[Staff, Depends(get_current_user)]
 AdminUser = Annotated[Staff, Depends(require_role("super_admin", "admin"))]
+ContentManager = Annotated[Staff, Depends(require_role("super_admin", "admin", "assistant"))]
 SuperAdmin = Annotated[Staff, Depends(require_role("super_admin"))]
 
 
@@ -287,6 +288,7 @@ async def on_startup():
                 ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS org_id VARCHAR;
                 ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS media_path VARCHAR;
                 ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS media_type VARCHAR;
+                ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS blocks_json JSONB;
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS org_id VARCHAR;
                 -- Tags: tg_account_id
                 ALTER TABLE tags ADD COLUMN IF NOT EXISTS tg_account_id UUID REFERENCES tg_accounts(id);
@@ -1613,7 +1615,7 @@ async def send_media(
 
 @app.post("/api/messages/{contact_id}/send-template-media", response_model=MessageOut)
 async def send_template_media(contact_id: UUID, user: CurrentUser, db: DB, template_id: UUID = Query(...)):
-    """Send a message using a template's media and text."""
+    """Send a message using a template's media and text (legacy single-block)."""
     contact = await _get_contact_with_access(contact_id, user, db)
     if contact.status != "approved":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Contact not approved")
@@ -1648,6 +1650,68 @@ async def send_template_media(contact_id: UUID, user: CurrentUser, db: DB, templ
     await db.commit()
     await db.refresh(msg)
     return msg
+
+
+@app.post("/api/messages/{contact_id}/send-template-blocks")
+async def send_template_blocks(contact_id: UUID, user: CurrentUser, db: DB, template_id: UUID = Query(...)):
+    """Send a multi-block template: each block sent as a separate message with delays."""
+    contact = await _get_contact_with_access(contact_id, user, db)
+    if contact.status != "approved":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Contact not approved")
+
+    result = await db.execute(select(MessageTemplate).where(MessageTemplate.id == template_id))
+    tpl = result.scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Template not found")
+
+    blocks = tpl.blocks_json
+    if not blocks:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Template has no blocks")
+
+    sent_messages = []
+    for i, block in enumerate(blocks):
+        # Wait delay from previous block
+        if i > 0:
+            delay = blocks[i - 1].get("delay_after", 0)
+            if delay and delay > 0:
+                await asyncio.sleep(min(delay, 30))  # cap at 30s
+
+        block_media_path = None
+        if block.get("media_path"):
+            block_media_path = os.path.join(MEDIA_DIR, block["media_path"])
+
+        text = block.get("content") or None
+        media_type = block.get("media_type") or block.get("type")
+        if media_type == "text":
+            media_type = None
+
+        try:
+            tg_msg_id = await send_message(
+                contact.tg_account_id, contact.real_tg_id,
+                text=text,
+                file_path=block_media_path,
+                media_type=media_type if block_media_path else None,
+            )
+        except ValueError as e:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Block {i+1} failed: {e}")
+
+        msg = Message(
+            contact_id=contact.id,
+            tg_message_id=tg_msg_id,
+            direction="outgoing",
+            content=text,
+            media_type=media_type if block_media_path else None,
+            media_path=block.get("media_path"),
+            sent_by=user.id,
+        )
+        db.add(msg)
+        sent_messages.append(msg)
+
+    contact.last_message_at = func.now()
+    await db.commit()
+    for m in sent_messages:
+        await db.refresh(m)
+    return [{"id": str(m.id), "tg_message_id": m.tg_message_id, "content": m.content, "media_type": m.media_type} for m in sent_messages]
 
 
 @app.patch("/api/messages/{contact_id}/read")
@@ -1911,7 +1975,7 @@ async def list_tags(user: CurrentUser, db: DB, tg_account_id: UUID | None = None
 
 
 @app.post("/api/tags", response_model=TagOut)
-async def create_tag(req: TagCreate, user: AdminUser, db: DB):
+async def create_tag(req: TagCreate, user: ContentManager, db: DB):
     tag = Tag(name=req.name, color=req.color, created_by=user.id, org_id=_org_id(user), tg_account_id=req.tg_account_id)
     db.add(tag)
     await db.commit()
@@ -1920,7 +1984,7 @@ async def create_tag(req: TagCreate, user: AdminUser, db: DB):
 
 
 @app.delete("/api/tags/{tag_id}")
-async def delete_tag(tag_id: UUID, user: AdminUser, db: DB):
+async def delete_tag(tag_id: UUID, user: ContentManager, db: DB):
     result = await db.execute(select(Tag).where(Tag.id == tag_id, Tag.org_id == _org_id(user)))
     tag = result.scalar_one_or_none()
     if not tag:
@@ -1969,13 +2033,20 @@ async def list_templates(user: CurrentUser, db: DB, tg_account_id: UUID | None =
 
 
 @app.post("/api/templates", response_model=TemplateOut)
-async def create_template(req: TemplateCreate, user: AdminUser, db: DB):
+async def create_template(req: TemplateCreate, user: ContentManager, db: DB):
+    blocks = [b.model_dump() for b in req.blocks_json] if req.blocks_json else None
+    # Build legacy content from blocks for backward compat
+    content = req.content or ""
+    if blocks and not content:
+        text_parts = [b["content"] for b in blocks if b.get("content")]
+        content = "\n---\n".join(text_parts) if text_parts else "(media)"
     tpl = MessageTemplate(
         title=req.title,
-        content=req.content,
+        content=content,
         category=req.category,
         shortcut=req.shortcut,
         tg_account_id=req.tg_account_id,
+        blocks_json=blocks,
         created_by=user.id,
         org_id=_org_id(user),
     )
@@ -1986,20 +2057,28 @@ async def create_template(req: TemplateCreate, user: AdminUser, db: DB):
 
 
 @app.patch("/api/templates/{template_id}", response_model=TemplateOut)
-async def update_template(template_id: UUID, req: TemplateUpdate, user: AdminUser, db: DB):
+async def update_template(template_id: UUID, req: TemplateUpdate, user: ContentManager, db: DB):
     result = await db.execute(select(MessageTemplate).where(MessageTemplate.id == template_id, MessageTemplate.org_id == _org_id(user)))
     tpl = result.scalar_one_or_none()
     if not tpl:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    for field, val in req.model_dump(exclude_unset=True).items():
+    data = req.model_dump(exclude_unset=True)
+    if "blocks_json" in data and data["blocks_json"] is not None:
+        data["blocks_json"] = [b.model_dump() if hasattr(b, "model_dump") else b for b in data["blocks_json"]]
+        # Update legacy content from blocks
+        text_parts = [b["content"] for b in data["blocks_json"] if b.get("content")]
+        data["content"] = "\n---\n".join(text_parts) if text_parts else "(media)"
+    for field, val in data.items():
         setattr(tpl, field, val)
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(tpl, "blocks_json")
     await db.commit()
     await db.refresh(tpl)
     return tpl
 
 
 @app.delete("/api/templates/{template_id}")
-async def delete_template(template_id: UUID, user: AdminUser, db: DB):
+async def delete_template(template_id: UUID, user: ContentManager, db: DB):
     result = await db.execute(select(MessageTemplate).where(MessageTemplate.id == template_id, MessageTemplate.org_id == _org_id(user)))
     tpl = result.scalar_one_or_none()
     if not tpl:
@@ -2012,7 +2091,7 @@ async def delete_template(template_id: UUID, user: AdminUser, db: DB):
 @app.post("/api/templates/{template_id}/upload-media")
 async def template_upload_media(
     template_id: UUID,
-    user: AdminUser,
+    user: ContentManager,
     db: DB,
     file: UploadFile = File(...),
     send_as: str = Query("auto", description="auto|photo|video|video_note|voice|document"),
@@ -2083,6 +2162,99 @@ async def template_upload_media(
     tpl.media_path = filename
     await db.commit()
     return {"media_path": filename, "media_type": media_type}
+
+
+@app.post("/api/templates/{template_id}/upload-block-media")
+async def template_upload_block_media(
+    template_id: UUID,
+    user: ContentManager,
+    db: DB,
+    file: UploadFile = File(...),
+    block_id: str = Query(..., description="Block ID within the template"),
+    send_as: str = Query("auto", description="auto|photo|video|video_note|voice|document"),
+):
+    """Upload media for a specific block within a template."""
+    _validate_upload(file)
+
+    result = await db.execute(select(MessageTemplate).where(MessageTemplate.id == template_id, MessageTemplate.org_id == _org_id(user)))
+    tpl = result.scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    ext = os.path.splitext(os.path.basename(file.filename or ""))[1].lower()
+    filename = f"tplblock_{template_id}_{block_id}{ext}"
+    filepath = os.path.join(MEDIA_DIR, filename)
+    filepath = os.path.abspath(filepath)
+    if not filepath.startswith(os.path.abspath(MEDIA_DIR)):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid filename")
+
+    content = await file.read()
+    MAX_UPLOAD_SIZE = 50 * 1024 * 1024
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large (max 50MB)")
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    if send_as != "auto":
+        media_type = send_as
+    else:
+        ct = (file.content_type or "").lower()
+        if "image" in ct:
+            media_type = "photo"
+        elif "video" in ct:
+            media_type = "video"
+        elif "audio" in ct or "ogg" in ct:
+            media_type = "voice"
+        else:
+            media_type = "document"
+
+    # Convert video to circle
+    if media_type == "video_note":
+        import subprocess
+        out_path = os.path.join(MEDIA_DIR, f"tplblock_{template_id}_{block_id}_circle.mp4")
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-i", filepath,
+                "-t", "60", "-vf", "crop=min(iw\\,ih):min(iw\\,ih),scale=384:384",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "28", "-an",
+                "-f", "mp4", out_path,
+            ], check=True, timeout=120, capture_output=True)
+            filename = f"tplblock_{template_id}_{block_id}_circle.mp4"
+        except Exception:
+            media_type = "video"
+
+    # Convert audio to voice (OGG opus)
+    if media_type == "voice" and ext not in (".ogg", ".oga"):
+        import subprocess
+        out_path = os.path.join(MEDIA_DIR, f"tplblock_{template_id}_{block_id}_voice.ogg")
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-i", filepath,
+                "-c:a", "libopus", "-b:a", "64k", "-f", "ogg", out_path,
+            ], check=True, timeout=120, capture_output=True)
+            filename = f"tplblock_{template_id}_{block_id}_voice.ogg"
+        except Exception:
+            media_type = "document"
+
+    return {"media_path": filename, "media_type": media_type, "block_id": block_id}
+
+
+@app.delete("/api/templates/{template_id}/block-media/{block_id}")
+async def template_delete_block_media(template_id: UUID, block_id: str, user: ContentManager, db: DB):
+    """Delete media file for a specific block."""
+    result = await db.execute(select(MessageTemplate).where(MessageTemplate.id == template_id, MessageTemplate.org_id == _org_id(user)))
+    tpl = result.scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    # Remove matching files
+    import glob as _glob
+    pattern = os.path.join(MEDIA_DIR, f"tplblock_{template_id}_{block_id}*")
+    for f in _glob.glob(pattern):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+    return {"status": "deleted"}
 
 
 # ============================================================

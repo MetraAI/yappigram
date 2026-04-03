@@ -689,46 +689,56 @@ function ChatsContent() {
     } finally { sendingRef.current = false; setSending(false); }
   };
 
-  // Apply template: supports scripts (multi-message, split by \n---\n)
+  // Apply template: supports blocks (new) and legacy scripts
   const applyTemplate = async (tpl: Template) => {
     setShowTemplates(false);
     if (!selected) return;
 
-    // Check if it's a script (multi-message template)
-    const parts = tpl.content.split("\n---\n").map((s) => s.trim()).filter(Boolean);
-    const isScript = parts.length > 1;
-
-    if (tpl.media_path && tpl.media_type) {
-      // Send media from template via backend
+    // New block-based templates
+    if (tpl.blocks_json && tpl.blocks_json.length > 0) {
       sendingRef.current = true;
+      setSending(true);
       try {
-        const msg = await api(`/api/messages/${selected.id}/send-template-media?template_id=${tpl.id}`, {
+        const results: any[] = await api(`/api/messages/${selected.id}/send-template-blocks?template_id=${tpl.id}`, {
           method: "POST",
         });
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === msg.id)) return prev;
-          return [...prev, msg];
-        });
+        if (Array.isArray(results)) {
+          for (const msg of results) {
+            setMessages((prev: any[]) => prev.some((m: any) => m.id === msg.id) ? prev : [...prev, msg]);
+          }
+        }
       } catch (e: any) { alert(e.message); }
       sendingRef.current = false;
-    } else if (isScript) {
-      // Script mode: send each part as a separate message with small delay
+      setSending(false);
+      return;
+    }
+
+    // Legacy: single media template
+    if (tpl.media_path && tpl.media_type) {
+      sendingRef.current = true;
+      try {
+        const msg: any = await api(`/api/messages/${selected.id}/send-template-media?template_id=${tpl.id}`, {
+          method: "POST",
+        });
+        setMessages((prev: any[]) => prev.some((m: any) => m.id === msg.id) ? prev : [...prev, msg]);
+      } catch (e: any) { alert(e.message); }
+      sendingRef.current = false;
+      return;
+    }
+
+    // Legacy: script mode (multi-message split by ---)
+    const parts = tpl.content.split("\n---\n").map((s) => s.trim()).filter(Boolean);
+    if (parts.length > 1) {
       sendingRef.current = true;
       setSending(true);
       try {
         for (const part of parts) {
-          const msg = await api(`/api/messages/${selected.id}/send`, {
+          const msg: any = await api(`/api/messages/${selected.id}/send`, {
             method: "POST",
             body: JSON.stringify({ content: part }),
           });
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === msg.id)) return prev;
-            return [...prev, msg];
-          });
-          // Small delay between messages for natural feel
-          if (part !== parts[parts.length - 1]) {
-            await new Promise((r) => setTimeout(r, 10));
-          }
+          setMessages((prev: any[]) => prev.some((m: any) => m.id === msg.id) ? prev : [...prev, msg]);
+          if (part !== parts[parts.length - 1]) await new Promise((r) => setTimeout(r, 10));
         }
       } catch (e: any) { alert(e.message); }
       sendingRef.current = false;

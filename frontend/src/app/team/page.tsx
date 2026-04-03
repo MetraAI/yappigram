@@ -58,12 +58,14 @@ function TeamContent() {
   const roleColor: Record<string, string> = {
     super_admin: "#ef4444",
     admin: "#f59e0b",
+    assistant: "#a78bfa",
     operator: "#0ea5e9",
   };
 
   const roleLabel: Record<string, string> = {
     super_admin: "Супер-админ",
     admin: "Админ",
+    assistant: "Помощник",
     operator: "Оператор",
   };
 
@@ -103,6 +105,7 @@ function TeamContent() {
                       className="px-2 py-1.5 rounded-lg border border-surface-border bg-surface text-xs text-slate-300 focus:outline-none focus:border-brand/30"
                     >
                       <option value="operator">Оператор</option>
+                      <option value="assistant">Помощник</option>
                       <option value="admin">Админ</option>
                     </select>
                   )}

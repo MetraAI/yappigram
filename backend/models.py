@@ -245,6 +245,7 @@ class MessageTemplate(Base):
     tg_account_id = Column(UUID(as_uuid=True), ForeignKey("tg_accounts.id"), nullable=True, index=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("staff.id"), nullable=True)
     org_id = Column(String, nullable=True, index=True)
+    blocks_json = Column(JSON, nullable=True)  # [{type, content, media_path, media_type, delay_after}]
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

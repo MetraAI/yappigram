@@ -493,6 +493,15 @@ export async function pressInlineButton(contactId: string, messageId: string, ca
 // Templates
 // ============================================================
 
+export interface TemplateBlock {
+  id: string;
+  type: "text" | "photo" | "video" | "video_note" | "voice" | "document";
+  content?: string | null;
+  media_path?: string | null;
+  media_type?: string | null;
+  delay_after: number;
+}
+
 export interface Template {
   id: string;
   title: string;
@@ -501,6 +510,7 @@ export interface Template {
   shortcut: string | null;
   media_path: string | null;
   media_type: string | null;
+  blocks_json: TemplateBlock[] | null;
   tg_account_id: string | null;
   created_by: string | null;
   created_by_name: string | null;
@@ -511,11 +521,11 @@ export async function getTemplates(): Promise<Template[]> {
   return api("/api/templates");
 }
 
-export async function createTemplate(data: { title: string; content: string; category?: string; shortcut?: string; tg_account_id?: string }) {
+export async function createTemplate(data: { title: string; content: string; category?: string; shortcut?: string; tg_account_id?: string; blocks_json?: TemplateBlock[] }) {
   return api("/api/templates", { method: "POST", body: JSON.stringify(data) });
 }
 
-export async function updateTemplate(id: string, data: Partial<Template>) {
+export async function updateTemplate(id: string, data: Partial<Template> & { blocks_json?: TemplateBlock[] }) {
   return api(`/api/templates/${id}`, { method: "PATCH", body: JSON.stringify(data) });
 }
 

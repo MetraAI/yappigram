@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, clearTokens, disconnectWS, getTemplates, createTemplate, updateTemplate, deleteTemplate, deleteTag, getRole, fetchTgStatus, createTag, updateTimezone, fetchNewChatsReport } from "@/lib";
-import type { Template, TgStatusAccount, NewChatsReport } from "@/lib";
+import type { Template, TemplateBlock, TgStatusAccount, NewChatsReport } from "@/lib";
 import { AppShell, AuthGuard, Button, Input } from "@/components";
 import { useRouter } from "next/navigation";
 
@@ -28,6 +28,7 @@ function SettingsContent() {
   }, []);
 
   const isAdmin = ["super_admin", "admin"].includes(userRole);
+  const canManageContent = ["super_admin", "admin", "assistant"].includes(userRole);
 
   return (
     <div className="p-6 max-w-2xl mx-auto space-y-8">
@@ -51,7 +52,7 @@ function SettingsContent() {
       <TimezoneSection />
       {isAdmin && <AdminSettingsSection />}
       <TagsSection />
-      <TemplatesSection isAdmin={isAdmin} />
+      <TemplatesSection canManage={canManageContent} />
     </div>
   );
 }
@@ -297,17 +298,50 @@ function TagsSection() {
   );
 }
 
-function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
+// ============================================================
+// Template Block Editor
+// ============================================================
+
+interface EditorBlock {
+  id: string;
+  type: "text" | "photo" | "video" | "video_note" | "voice" | "document";
+  content: string;
+  media_path: string | null;
+  media_type: string | null;
+  mediaFile?: File | null;
+  delay_after: number;
+}
+
+const BLOCK_TYPE_LABELS: Record<string, { icon: string; label: string }> = {
+  text: { icon: "💬", label: "Текст" },
+  photo: { icon: "📷", label: "Фото" },
+  video: { icon: "🎬", label: "Видео" },
+  video_note: { icon: "🔵", label: "Кружок" },
+  voice: { icon: "🎤", label: "Голосовое" },
+  document: { icon: "📄", label: "Документ" },
+};
+
+function newBlock(type: EditorBlock["type"] = "text"): EditorBlock {
+  return { id: crypto.randomUUID(), type, content: "", media_path: null, media_type: null, mediaFile: null, delay_after: 0 };
+}
+
+function TemplatesSection({ canManage }: { canManage: boolean }) {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [accounts, setAccounts] = useState<{ id: string; phone: string; display_name: string | null }[]>([]);
   const [filterAccount, setFilterAccount] = useState<string | "all">("");
+
+  // Editor state
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
   const [category, setCategory] = useState("");
   const [shortcut, setShortcut] = useState("");
   const [assignAccount, setAssignAccount] = useState("");
-  const [mediaFile, setMediaFile] = useState<File | null>(null);
-  const [sendAs, setSendAs] = useState("auto");
+  const [blocks, setBlocks] = useState<EditorBlock[]>([newBlock("text")]);
+  const [saving, setSaving] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   useEffect(() => {
     getTemplates().then(setTemplates).catch(console.error);
@@ -323,256 +357,461 @@ function TemplatesSection({ isAdmin }: { isAdmin: boolean }) {
     ? templates
     : templates.filter((t) => t.tg_account_id === filterAccount || !t.tg_account_id);
 
-  const [creating, setCreating] = useState(false);
-  const handleCreate = async () => {
-    if (!title.trim() || !content.trim() || creating) return;
-    setCreating(true);
-    try {
-      let tpl = await createTemplate({
-        title: title.trim(),
-        content: content.trim(),
-        category: category.trim() || undefined,
-        shortcut: shortcut.trim() || undefined,
-        tg_account_id: assignAccount || undefined,
-      });
-      // Upload media if selected
-      if (mediaFile) {
-        const formData = new FormData();
-        formData.append("file", mediaFile);
-        const mediaResult = await api(`/api/templates/${tpl.id}/upload-media?send_as=${sendAs}`, {
-          method: "POST",
-          body: formData,
-          headers: {},
+  // Open editor for new template
+  const openNew = () => {
+    setEditingId(null);
+    setTitle(""); setCategory(""); setShortcut(""); setAssignAccount("");
+    setBlocks([newBlock("text")]);
+    setEditorOpen(true);
+    setShowPreview(false);
+  };
+
+  // Open editor for existing template
+  const openEdit = (tpl: Template) => {
+    setEditingId(tpl.id);
+    setTitle(tpl.title);
+    setCategory(tpl.category || "");
+    setShortcut(tpl.shortcut || "");
+    setAssignAccount(tpl.tg_account_id || "");
+    if (tpl.blocks_json && tpl.blocks_json.length > 0) {
+      setBlocks(tpl.blocks_json.map(b => ({ ...b, content: b.content || "", media_path: b.media_path || null, media_type: b.media_type || null, mediaFile: null, delay_after: b.delay_after || 0 })));
+    } else {
+      // Convert legacy template to blocks
+      const legacyBlocks: EditorBlock[] = [];
+      if (tpl.content) {
+        const parts = tpl.content.split("\n---\n");
+        parts.forEach((p, i) => {
+          const b = newBlock("text");
+          b.content = p;
+          if (i === 0 && tpl.media_path) {
+            b.type = (tpl.media_type as EditorBlock["type"]) || "photo";
+            b.media_path = tpl.media_path;
+            b.media_type = tpl.media_type;
+          }
+          legacyBlocks.push(b);
         });
-        tpl = { ...tpl, media_path: mediaResult.media_path, media_type: mediaResult.media_type };
       }
-      setTemplates((prev) => [...prev, tpl]);
-      setTitle(""); setContent(""); setCategory(""); setShortcut("");
-      setMediaFile(null); setSendAs("auto");
-    } catch (e: any) { alert(e.message); } finally { setCreating(false); }
+      setBlocks(legacyBlocks.length > 0 ? legacyBlocks : [newBlock("text")]);
+    }
+    setEditorOpen(true);
+    setShowPreview(false);
+  };
+
+  const closeEditor = () => {
+    setEditorOpen(false);
+    setEditingId(null);
+  };
+
+  // Block manipulation
+  const updateBlock = (idx: number, patch: Partial<EditorBlock>) => {
+    setBlocks(prev => prev.map((b, i) => i === idx ? { ...b, ...patch } : b));
+  };
+
+  const removeBlock = (idx: number) => {
+    setBlocks(prev => prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx));
+  };
+
+  const addBlock = (type: EditorBlock["type"] = "text") => {
+    setBlocks(prev => [...prev, newBlock(type)]);
+  };
+
+  // Drag & drop
+  const handleDragStart = (idx: number) => { setDragIdx(idx); };
+  const handleDragOver = (e: React.DragEvent, idx: number) => { e.preventDefault(); setDragOverIdx(idx); };
+  const handleDrop = (idx: number) => {
+    if (dragIdx === null || dragIdx === idx) { setDragIdx(null); setDragOverIdx(null); return; }
+    setBlocks(prev => {
+      const arr = [...prev];
+      const [moved] = arr.splice(dragIdx, 1);
+      arr.splice(idx, 0, moved);
+      return arr;
+    });
+    setDragIdx(null);
+    setDragOverIdx(null);
+  };
+  const handleDragEnd = () => { setDragIdx(null); setDragOverIdx(null); };
+
+  // Media file handling per block
+  const handleBlockFile = (idx: number, file: File) => {
+    let type: EditorBlock["type"] = "document";
+    if (file.type.startsWith("image/")) type = "photo";
+    else if (file.type.startsWith("video/")) type = "video";
+    else if (file.type.startsWith("audio/") || file.type.includes("ogg")) type = "voice";
+    updateBlock(idx, { mediaFile: file, type });
+  };
+
+  // Save
+  const handleSave = async () => {
+    if (!title.trim() || saving) return;
+    const hasContent = blocks.some(b => b.content.trim() || b.mediaFile || b.media_path);
+    if (!hasContent) return;
+    setSaving(true);
+    try {
+      const blocksData = blocks.map(b => ({
+        id: b.id, type: b.type, content: b.content, media_path: b.media_path, media_type: b.media_type, delay_after: b.delay_after,
+      }));
+
+      let tpl: Template;
+      if (editingId) {
+        tpl = await updateTemplate(editingId, {
+          title: title.trim(), category: category.trim() || null, shortcut: shortcut.trim() || null,
+          blocks_json: blocksData as any,
+        });
+      } else {
+        tpl = await createTemplate({
+          title: title.trim(), content: blocks.map(b => b.content).filter(Boolean).join("\n---\n") || "(media)",
+          category: category.trim() || undefined, shortcut: shortcut.trim() || undefined,
+          tg_account_id: assignAccount || undefined, blocks_json: blocksData as any,
+        });
+      }
+
+      // Upload media for blocks that have new files
+      for (const block of blocks) {
+        if (block.mediaFile) {
+          const formData = new FormData();
+          formData.append("file", block.mediaFile);
+          const sendAs = block.type === "text" ? "auto" : block.type;
+          const result = await api(`/api/templates/${tpl.id}/upload-block-media?block_id=${block.id}&send_as=${sendAs}`, {
+            method: "POST", body: formData, headers: {},
+          });
+          // Update block in the saved template
+          const updatedBlocks = (tpl.blocks_json || blocksData).map((b: any) =>
+            b.id === block.id ? { ...b, media_path: result.media_path, media_type: result.media_type } : b
+          );
+          tpl = await updateTemplate(tpl.id, { blocks_json: updatedBlocks as any });
+        }
+      }
+
+      setTemplates(prev => editingId
+        ? prev.map(t => t.id === editingId ? { ...t, ...tpl } : t)
+        : [...prev, tpl]
+      );
+      closeEditor();
+    } catch (e: any) { alert(e.message); } finally { setSaving(false); }
   };
 
   const handleDelete = async (id: string) => {
+    if (!confirm("Удалить шаблон?")) return;
     try {
       await deleteTemplate(id);
-      setTemplates((prev) => prev.filter((t) => t.id !== id));
+      setTemplates(prev => prev.filter(t => t.id !== id));
     } catch (e: any) { alert(e.message); }
   };
 
-  // Edit template state
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editContent, setEditContent] = useState("");
-  const [editCategory, setEditCategory] = useState("");
-  const [editShortcut, setEditShortcut] = useState("");
-  const [editSaving, setEditSaving] = useState(false);
-
-  const startEdit = (tpl: Template) => {
-    setEditingId(tpl.id);
-    setEditTitle(tpl.title);
-    setEditContent(tpl.content);
-    setEditCategory(tpl.category || "");
-    setEditShortcut(tpl.shortcut || "");
+  const getBlocksSummary = (tpl: Template) => {
+    const b = tpl.blocks_json;
+    if (!b || b.length === 0) {
+      const msgCount = tpl.content.split("\n---\n").filter(Boolean).length;
+      return { count: msgCount, types: [tpl.media_type ? tpl.media_type : "text"] };
+    }
+    return { count: b.length, types: [...new Set(b.map(x => x.type))] };
   };
 
-  const cancelEdit = () => {
-    setEditingId(null);
-    setEditTitle(""); setEditContent(""); setEditCategory(""); setEditShortcut("");
-  };
-
-  const handleEditSave = async () => {
-    if (!editingId || !editTitle.trim() || !editContent.trim() || editSaving) return;
-    setEditSaving(true);
-    try {
-      const updated = await updateTemplate(editingId, {
-        title: editTitle.trim(),
-        content: editContent.trim(),
-        category: editCategory.trim() || null,
-        shortcut: editShortcut.trim() || null,
-      });
-      setTemplates((prev) => prev.map((t) => t.id === editingId ? { ...t, ...updated } : t));
-      cancelEdit();
-    } catch (e: any) { alert(e.message); } finally { setEditSaving(false); }
-  };
+  // Telegram preview
+  const CRM_MEDIA_BASE = "https://crm.metra-ai.org/api/media/";
 
   return (
     <section className="animate-fade-in">
-      <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-        <svg className="w-5 h-5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-          <polyline points="14 2 14 8 20 8" />
-          <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
-        </svg>
-        Шаблоны ответов
-      </h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <svg className="w-5 h-5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+          Конструктор шаблонов
+        </h2>
+        {canManage && !editorOpen && (
+          <button onClick={openNew} className="px-4 py-2 rounded-xl bg-brand text-white text-sm font-medium hover:bg-brand/80 transition-colors">
+            + Новый шаблон
+          </button>
+        )}
+      </div>
 
-      {/* Filter by account — only for admins */}
-      {isAdmin && accounts.length > 1 && (
+      {/* Account filter */}
+      {accounts.length > 1 && (
         <div className="flex gap-1 mb-4 bg-surface border border-surface-border rounded-xl p-1 w-fit flex-wrap">
-          {accounts.map((acc) => (
-            <button
-              key={acc.id}
-              onClick={() => setFilterAccount(acc.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                filterAccount === acc.id ? "bg-brand/15 text-brand" : "text-slate-400 hover:text-slate-300"
-              }`}
-            >
+          {accounts.map(acc => (
+            <button key={acc.id} onClick={() => setFilterAccount(acc.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filterAccount === acc.id ? "bg-brand/15 text-brand" : "text-slate-400 hover:text-slate-300"}`}>
               {acc.display_name || acc.phone}
             </button>
           ))}
         </div>
       )}
 
-      <div className="space-y-2 mb-4">
-        {filteredTemplates.map((tpl) => (
-          editingId === tpl.id ? (
-            <div key={tpl.id} className="bg-gradient-to-br from-surface-card to-surface border border-brand/30 rounded-xl p-4 space-y-3 animate-fade-in">
-              <div className="grid grid-cols-2 gap-3">
-                <Input label="Название" value={editTitle} onChange={setEditTitle} placeholder="Приветствие" />
-                <Input label="Категория" value={editCategory} onChange={setEditCategory} placeholder="Общие" />
-              </div>
-              <div>
-                <label className="text-sm text-slate-400 font-medium block mb-1.5">Текст шаблона</label>
-                <textarea
-                  value={editContent}
-                  onChange={(e) => setEditContent(e.target.value)}
-                  rows={3}
-                  className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 resize-none"
-                />
-              </div>
-              <Input label="Шорткат" value={editShortcut} onChange={setEditShortcut} placeholder="/hello" />
-              <div className="flex gap-2">
-                <Button onClick={handleEditSave} disabled={!editTitle.trim() || !editContent.trim() || editSaving}>
-                  {editSaving ? "Сохранение..." : "Сохранить"}
-                </Button>
-                <Button variant="ghost" onClick={cancelEdit}>Отмена</Button>
-              </div>
-            </div>
-          ) : (
-          <div key={tpl.id} className="bg-surface-card border border-surface-border rounded-xl p-3 flex items-start justify-between gap-3 animate-fade-in">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="font-medium text-sm text-brand">{tpl.title}</span>
-                {tpl.media_type && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand">
-                    {tpl.media_type === "photo" ? "📷" : tpl.media_type === "video" ? "🎬" : tpl.media_type === "video_note" ? "🔵" : tpl.media_type === "voice" ? "🎤" : "📄"}
-                  </span>
-                )}
-                {tpl.category && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-slate-400">{tpl.category}</span>}
-                {tpl.shortcut && <span className="text-[10px] text-slate-500 font-mono">{tpl.shortcut}</span>}
-                {tpl.tg_account_id && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">
-                    {(() => { const a = accounts.find((a) => a.id === tpl.tg_account_id); return a?.display_name || a?.phone || "—"; })()}
-                  </span>
-                )}
-                {tpl.created_by_name && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-slate-500">{tpl.created_by_name}</span>
+      {/* Template list */}
+      {!editorOpen && (
+        <div className="space-y-2 mb-4">
+          {filteredTemplates.map(tpl => {
+            const summary = getBlocksSummary(tpl);
+            return (
+              <div key={tpl.id} className="bg-surface-card border border-surface-border rounded-xl p-3 flex items-start justify-between gap-3 animate-fade-in hover:border-surface-border/80 transition-colors">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <span className="font-medium text-sm text-brand">{tpl.title}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">
+                      {summary.count} {summary.count === 1 ? "блок" : summary.count < 5 ? "блока" : "блоков"}
+                    </span>
+                    {summary.types.filter(t => t !== "text").map(t => (
+                      <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand">
+                        {BLOCK_TYPE_LABELS[t]?.icon || ""} {BLOCK_TYPE_LABELS[t]?.label || t}
+                      </span>
+                    ))}
+                    {tpl.category && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-slate-400">{tpl.category}</span>}
+                    {tpl.shortcut && <span className="text-[10px] text-slate-500 font-mono">{tpl.shortcut}</span>}
+                    {tpl.tg_account_id && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">
+                        {(() => { const a = accounts.find(a => a.id === tpl.tg_account_id); return a?.display_name || a?.phone || "—"; })()}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400 break-words line-clamp-2">{tpl.content.slice(0, 150)}{tpl.content.length > 150 ? "..." : ""}</p>
+                </div>
+                {canManage && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => openEdit(tpl)} className="text-slate-600 hover:text-brand transition-colors p-1.5 rounded-lg hover:bg-brand/5" title="Редактировать">
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                      </svg>
+                    </button>
+                    <button onClick={() => handleDelete(tpl.id)} className="text-slate-600 hover:text-red-400 transition-colors p-1.5 rounded-lg hover:bg-red-500/5" title="Удалить">
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      </svg>
+                    </button>
+                  </div>
                 )}
               </div>
-              <p className="text-xs text-slate-400 break-words">{tpl.content.slice(0, 150)}{tpl.content.length > 150 ? "..." : ""}</p>
-            </div>
-            {isAdmin && (
-              <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => startEdit(tpl)} className="text-slate-600 hover:text-brand transition-colors p-1">
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-                  </svg>
-                </button>
-                <button onClick={() => handleDelete(tpl.id)} className="text-slate-600 hover:text-red-400 transition-colors p-1">
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                  </svg>
-                </button>
-              </div>
-            )}
-          </div>
-          )
-        ))}
-        {filteredTemplates.length === 0 && <span className="text-sm text-slate-500">Шаблонов пока нет</span>}
-      </div>
+            );
+          })}
+          {filteredTemplates.length === 0 && <p className="text-sm text-slate-500 text-center py-8">Шаблонов пока нет</p>}
+        </div>
+      )}
 
-      {isAdmin && (
-        <div className="bg-gradient-to-br from-surface-card to-surface border border-surface-border rounded-2xl p-5 space-y-3">
+      {/* Block editor */}
+      {editorOpen && (
+        <div className="bg-gradient-to-br from-surface-card to-surface border border-brand/20 rounded-2xl p-5 space-y-4 animate-fade-in">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-semibold text-white">{editingId ? "Редактирование шаблона" : "Новый шаблон"}</h3>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setShowPreview(!showPreview)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${showPreview ? "bg-brand/15 text-brand" : "text-slate-400 hover:text-slate-300 bg-surface border border-surface-border"}`}>
+                {showPreview ? "Скрыть превью" : "Превью"}
+              </button>
+              <button onClick={closeEditor} className="text-slate-500 hover:text-slate-300 p-1">
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Template meta */}
           <div className="grid grid-cols-2 gap-3">
             <Input label="Название" value={title} onChange={setTitle} placeholder="Приветствие" />
             <Input label="Категория" value={category} onChange={setCategory} placeholder="Общие" />
           </div>
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-sm text-slate-400 font-medium">Текст шаблона</label>
-              <button
-                type="button"
-                onClick={() => setContent((prev) => prev + (prev.endsWith("\n") ? "" : "\n") + "---\n")}
-                className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
-                title="Разделить на несколько сообщений"
-              >
-                + Разделитель
-              </button>
-            </div>
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder={"Здравствуйте! Чем могу помочь?\n---\nВот наше предложение:"}
-              rows={4}
-              className="w-full bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 resize-none"
-            />
-            {content.includes("\n---\n") && (
-              <div className="text-[10px] text-amber-400 mt-1">📜 Скрипт — будет отправлено {content.split("\n---\n").filter(Boolean).length} сообщений</div>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Шорткат" value={shortcut} onChange={setShortcut} placeholder="/hello" />
+            {accounts.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm text-slate-400 font-medium">Аккаунт</label>
+                <select value={assignAccount} onChange={e => setAssignAccount(e.target.value)}
+                  className="bg-surface-card border border-surface-border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-brand/50 text-slate-300">
+                  <option value="">Выберите аккаунт</option>
+                  {accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.display_name || acc.phone}</option>)}
+                </select>
+              </div>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Input label="Шорткат (необязательно)" value={shortcut} onChange={setShortcut} placeholder="/hello" />
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm text-slate-400 font-medium">Аккаунт</label>
-              <select
-                value={assignAccount}
-                onChange={(e) => setAssignAccount(e.target.value)}
-                className="bg-surface-card border border-surface-border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-brand/50 transition-all duration-200 text-slate-300"
-              >
-                <option value="">Выберите аккаунт</option>
-                {accounts.map((acc) => (
-                  <option key={acc.id} value={acc.id}>{acc.display_name || acc.phone}</option>
-                ))}
-              </select>
-            </div>
-          </div>
 
-          {/* Media upload */}
+          {/* Blocks */}
           <div>
-            <label className="text-sm text-slate-400 font-medium block mb-1.5">Медиа (опционально)</label>
-            <div className="flex flex-wrap gap-2 items-center">
-              <label className="cursor-pointer px-3 py-2 rounded-xl border border-surface-border bg-surface text-sm text-slate-400 hover:border-brand/30 transition-colors">
-                {mediaFile ? mediaFile.name : "📎 Файл"}
-                <input type="file" className="hidden" accept="image/*,video/*,audio/*,.ogg"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) {
-                      setMediaFile(f);
-                      if (f.type.startsWith("image/")) setSendAs("photo");
-                      else if (f.type.startsWith("video/")) setSendAs("video");
-                      else if (f.type.startsWith("audio/")) setSendAs("voice");
-                      else setSendAs("document");
-                    }
-                  }}
-                />
-              </label>
-              {mediaFile && (
-                <>
-                  <select value={sendAs} onChange={(e) => setSendAs(e.target.value)}
-                    className="px-2 py-2 rounded-xl border border-surface-border bg-surface text-xs text-slate-400 focus:outline-none">
-                    <option value="photo">📷 Фото</option>
-                    <option value="video">🎬 Видео</option>
-                    <option value="video_note">🔵 Кружок</option>
-                    <option value="voice">🎤 Голосовое</option>
-                    <option value="document">📄 Документ</option>
-                  </select>
-                  <button onClick={() => { setMediaFile(null); setSendAs("auto"); }} className="text-red-400 text-xs hover:text-red-300">✕</button>
-                </>
-              )}
+            <label className="text-sm text-slate-400 font-medium block mb-2">Блоки сообщений</label>
+            <div className="space-y-2">
+              {blocks.map((block, idx) => (
+                <div key={block.id}
+                  draggable
+                  onDragStart={() => handleDragStart(idx)}
+                  onDragOver={e => handleDragOver(e, idx)}
+                  onDrop={() => handleDrop(idx)}
+                  onDragEnd={handleDragEnd}
+                  className={`relative bg-surface border rounded-xl p-3 transition-all ${
+                    dragOverIdx === idx ? "border-brand shadow-lg shadow-brand/10" : "border-surface-border"
+                  } ${dragIdx === idx ? "opacity-40" : ""}`}
+                >
+                  {/* Block header */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 p-0.5" title="Перетащите для изменения порядка">
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>
+                    </div>
+                    <span className="text-xs font-medium text-slate-500">#{idx + 1}</span>
+                    <select value={block.type} onChange={e => updateBlock(idx, { type: e.target.value as EditorBlock["type"] })}
+                      className="bg-surface-card border border-surface-border rounded-lg px-2 py-1 text-xs text-slate-300 focus:outline-none focus:border-brand/50">
+                      {Object.entries(BLOCK_TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+                    </select>
+                    {/* Delay */}
+                    <div className="flex items-center gap-1 ml-auto">
+                      <svg className="w-3.5 h-3.5 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      <input type="number" min={0} max={30} step={0.5} value={block.delay_after}
+                        onChange={e => updateBlock(idx, { delay_after: parseFloat(e.target.value) || 0 })}
+                        className="w-14 bg-surface-card border border-surface-border rounded-lg px-2 py-1 text-xs text-slate-300 focus:outline-none focus:border-brand/50 text-center"
+                        title="Задержка после этого блока (сек)"
+                      />
+                      <span className="text-[10px] text-slate-600">сек</span>
+                    </div>
+                    {blocks.length > 1 && (
+                      <button onClick={() => removeBlock(idx)} className="text-slate-600 hover:text-red-400 transition-colors p-1 ml-1" title="Удалить блок">
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Block content */}
+                  {(block.type === "text" || block.type === "photo" || block.type === "video" || block.type === "document") && (
+                    <textarea value={block.content} onChange={e => updateBlock(idx, { content: e.target.value })}
+                      placeholder={block.type === "text" ? "Текст сообщения..." : "Подпись к медиа (необязательно)..."}
+                      rows={block.type === "text" ? 3 : 2}
+                      className="w-full bg-surface-card border border-surface-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand/50 resize-none mb-2"
+                    />
+                  )}
+
+                  {/* Media upload for non-text blocks */}
+                  {block.type !== "text" && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {block.media_path && !block.mediaFile && (
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-brand/5 border border-brand/20 text-xs text-brand">
+                          {BLOCK_TYPE_LABELS[block.type]?.icon} {block.media_path.split("/").pop()}
+                          <button onClick={() => updateBlock(idx, { media_path: null, media_type: null })} className="text-red-400 hover:text-red-300 ml-1">x</button>
+                        </div>
+                      )}
+                      {block.mediaFile && (
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-xs text-emerald-400">
+                          {BLOCK_TYPE_LABELS[block.type]?.icon} {block.mediaFile.name}
+                          <button onClick={() => updateBlock(idx, { mediaFile: null })} className="text-red-400 hover:text-red-300 ml-1">x</button>
+                        </div>
+                      )}
+                      {!block.media_path && !block.mediaFile && (
+                        <label className="cursor-pointer px-3 py-1.5 rounded-lg border border-dashed border-surface-border text-xs text-slate-400 hover:border-brand/30 hover:text-slate-300 transition-colors">
+                          + Загрузить {BLOCK_TYPE_LABELS[block.type]?.label.toLowerCase()}
+                          <input type="file" className="hidden" accept={
+                            block.type === "photo" ? "image/*" :
+                            block.type === "video" || block.type === "video_note" ? "video/*" :
+                            block.type === "voice" ? "audio/*,.ogg" : "*"
+                          } onChange={e => { const f = e.target.files?.[0]; if (f) handleBlockFile(idx, f); }} />
+                        </label>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Add block buttons */}
+            <div className="flex gap-2 mt-3 flex-wrap">
+              {Object.entries(BLOCK_TYPE_LABELS).map(([type, { icon, label }]) => (
+                <button key={type} onClick={() => addBlock(type as EditorBlock["type"])}
+                  className="px-3 py-1.5 rounded-lg border border-dashed border-surface-border text-xs text-slate-400 hover:border-brand/30 hover:text-brand transition-colors">
+                  {icon} {label}
+                </button>
+              ))}
             </div>
           </div>
 
-          <Button onClick={handleCreate} disabled={!title.trim() || !content.trim() || creating || (accounts.length > 0 && !assignAccount)}>{creating ? "Создание..." : "Создать шаблон"}</Button>
+          {/* Telegram Preview */}
+          {showPreview && (
+            <div className="mt-4">
+              <label className="text-sm text-slate-400 font-medium block mb-2">Предпросмотр в Telegram</label>
+              <div className="bg-[#0e1621] rounded-xl p-4 max-w-sm mx-auto border border-surface-border">
+                <div className="space-y-1.5">
+                  {blocks.map((block, idx) => (
+                    <div key={block.id}>
+                      {idx > 0 && blocks[idx - 1].delay_after > 0 && (
+                        <div className="flex items-center justify-center gap-2 py-1">
+                          <div className="h-px bg-slate-700 flex-1" />
+                          <span className="text-[9px] text-slate-600 whitespace-nowrap">
+                            <svg className="w-3 h-3 inline-block mr-0.5 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            {blocks[idx - 1].delay_after}с
+                          </span>
+                          <div className="h-px bg-slate-700 flex-1" />
+                        </div>
+                      )}
+                      <div className={`max-w-[85%] ml-auto ${block.type === "voice" ? "" : ""}`}>
+                        {block.type === "video_note" ? (
+                          <div className="flex justify-end">
+                            <div className="w-48 h-48 rounded-full bg-gradient-to-br from-brand/20 to-purple-500/20 border-2 border-brand/30 flex items-center justify-center">
+                              {block.mediaFile ? (
+                                <span className="text-[10px] text-slate-400 text-center px-4">{block.mediaFile.name}</span>
+                              ) : block.media_path ? (
+                                <span className="text-[10px] text-brand">🔵 Кружок</span>
+                              ) : (
+                                <span className="text-2xl opacity-30">🔵</span>
+                              )}
+                            </div>
+                          </div>
+                        ) : block.type === "voice" ? (
+                          <div className="bg-[#2b5278] rounded-xl px-3 py-2 flex items-center gap-2 ml-auto w-fit max-w-full">
+                            <div className="w-8 h-8 rounded-full bg-brand/30 flex items-center justify-center shrink-0">
+                              <svg className="w-4 h-4 text-brand" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                            </div>
+                            <div className="flex-1 min-w-[100px]">
+                              <div className="flex items-center gap-0.5 h-6">
+                                {Array.from({ length: 28 }, (_, i) => (
+                                  <div key={i} className="w-[3px] bg-brand/40 rounded-full" style={{ height: `${Math.random() * 16 + 4}px` }} />
+                                ))}
+                              </div>
+                              <span className="text-[10px] text-white/40">0:00</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="bg-[#2b5278] rounded-xl overflow-hidden">
+                            {block.type === "photo" && (block.mediaFile || block.media_path) && (
+                              <div className="w-full h-32 bg-gradient-to-br from-brand/10 to-purple-500/10 flex items-center justify-center">
+                                {block.mediaFile ? (
+                                  <img src={URL.createObjectURL(block.mediaFile)} alt="" className="w-full h-32 object-cover" />
+                                ) : (
+                                  <img src={CRM_MEDIA_BASE + block.media_path} alt="" className="w-full h-32 object-cover"
+                                    onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                                )}
+                              </div>
+                            )}
+                            {block.type === "video" && (block.mediaFile || block.media_path) && (
+                              <div className="w-full h-32 bg-gradient-to-br from-brand/10 to-purple-500/10 flex items-center justify-center">
+                                <svg className="w-10 h-10 text-white/20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                              </div>
+                            )}
+                            {block.type === "document" && (block.mediaFile || block.media_path) && (
+                              <div className="px-3 py-2 flex items-center gap-2 border-b border-white/5">
+                                <div className="w-8 h-8 rounded-lg bg-brand/20 flex items-center justify-center shrink-0">
+                                  <svg className="w-4 h-4 text-brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/></svg>
+                                </div>
+                                <span className="text-xs text-white/60 truncate">{block.mediaFile?.name || block.media_path?.split("/").pop()}</span>
+                              </div>
+                            )}
+                            {(block.content || block.type === "text") && (
+                              <div className="px-3 py-2">
+                                <p className="text-sm text-white/90 whitespace-pre-wrap break-words">{block.content || <span className="text-white/20 italic">пустой текст</span>}</p>
+                                <div className="flex justify-end mt-0.5">
+                                  <span className="text-[10px] text-white/30">12:00 ✓✓</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex gap-2 pt-2">
+            <Button onClick={handleSave} disabled={!title.trim() || saving || (accounts.length > 0 && !assignAccount && !editingId)}>
+              {saving ? "Сохранение..." : editingId ? "Сохранить" : "Создать шаблон"}
+            </Button>
+            <Button variant="ghost" onClick={closeEditor}>Отмена</Button>
+          </div>
         </div>
       )}
     </section>

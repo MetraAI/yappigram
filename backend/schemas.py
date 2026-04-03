@@ -64,8 +64,8 @@ class BotInviteCreate(BaseModel):
     @field_validator("role")
     @classmethod
     def validate_role(cls, v):
-        if v not in ("operator", "admin"):
-            raise ValueError("Role must be 'operator' or 'admin'")
+        if v not in ("operator", "admin", "assistant"):
+            raise ValueError("Role must be 'operator', 'admin', or 'assistant'")
         return v
 
 class BotInviteOut(BaseModel):
@@ -207,18 +207,28 @@ class ContactUpdate(BaseModel):
 
 # --- Templates ---
 
+class TemplateBlockIn(BaseModel):
+    id: str  # client-generated UUID for the block
+    type: str = "text"  # text | photo | video | video_note | voice | document
+    content: str | None = None  # text or caption
+    media_path: str | None = None
+    media_type: str | None = None
+    delay_after: float = 0  # seconds to wait after this block
+
 class TemplateCreate(BaseModel):
     title: str = Field(..., max_length=200)
-    content: str = Field(..., max_length=10000)
+    content: str = Field("", max_length=10000)  # legacy fallback
     category: str | None = Field(None, max_length=100)
     shortcut: str | None = Field(None, max_length=50)
     tg_account_id: UUID | None = None
+    blocks_json: list[TemplateBlockIn] | None = None
 
 class TemplateUpdate(BaseModel):
     title: str | None = Field(None, max_length=200)
     content: str | None = Field(None, max_length=10000)
     category: str | None = Field(None, max_length=100)
     shortcut: str | None = Field(None, max_length=50)
+    blocks_json: list[TemplateBlockIn] | None = None
 
 class TemplateOut(BaseModel):
     id: UUID
@@ -228,6 +238,7 @@ class TemplateOut(BaseModel):
     shortcut: str | None = None
     media_path: str | None = None
     media_type: str | None = None
+    blocks_json: list | None = None
     tg_account_id: UUID | None = None
     created_by: UUID | None = None
     created_by_name: str | None = None

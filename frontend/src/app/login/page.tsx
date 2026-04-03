@@ -140,6 +140,7 @@ export default function LoginPage() {
   const roleLabel: Record<string, string> = {
     super_admin: "Админ",
     admin: "Админ",
+    assistant: "Помощник",
     operator: "Оператор",
   };
 
