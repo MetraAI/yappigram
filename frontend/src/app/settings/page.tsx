@@ -433,11 +433,17 @@ function TemplatesSection({ canManage }: { canManage: boolean }) {
 
   // Media file handling per block
   const handleBlockFile = (idx: number, file: File) => {
-    let type: EditorBlock["type"] = "document";
-    if (file.type.startsWith("image/")) type = "photo";
-    else if (file.type.startsWith("video/")) type = "video";
-    else if (file.type.startsWith("audio/") || file.type.includes("ogg")) type = "voice";
-    updateBlock(idx, { mediaFile: file, type });
+    const currentType = blocks[idx].type;
+    // Keep the block type if it's already a specific media type (e.g. video_note stays video_note)
+    if (currentType !== "text") {
+      updateBlock(idx, { mediaFile: file });
+    } else {
+      let type: EditorBlock["type"] = "document";
+      if (file.type.startsWith("image/")) type = "photo";
+      else if (file.type.startsWith("video/")) type = "video";
+      else if (file.type.startsWith("audio/") || file.type.includes("ogg")) type = "voice";
+      updateBlock(idx, { mediaFile: file, type });
+    }
   };
 
   // Save
@@ -465,21 +471,24 @@ function TemplatesSection({ canManage }: { canManage: boolean }) {
         });
       }
 
-      // Upload media for blocks that have new files
-      for (const block of blocks) {
-        if (block.mediaFile) {
+      // Upload media for blocks that have new files — all in parallel
+      const blocksWithFiles = blocks.filter(b => b.mediaFile);
+      if (blocksWithFiles.length > 0) {
+        const uploads = await Promise.all(blocksWithFiles.map(block => {
           const formData = new FormData();
-          formData.append("file", block.mediaFile);
+          formData.append("file", block.mediaFile!);
           const sendAs = block.type === "text" ? "auto" : block.type;
-          const result = await api(`/api/templates/${tpl.id}/upload-block-media?block_id=${block.id}&send_as=${sendAs}`, {
+          return api(`/api/templates/${tpl.id}/upload-block-media?block_id=${block.id}&send_as=${sendAs}`, {
             method: "POST", body: formData, headers: {},
           });
-          // Update block in the saved template
-          const updatedBlocks = (tpl.blocks_json || blocksData).map((b: any) =>
-            b.id === block.id ? { ...b, media_path: result.media_path, media_type: result.media_type } : b
-          );
-          tpl = await updateTemplate(tpl.id, { blocks_json: updatedBlocks as any });
-        }
+        }));
+        // Single update with all media paths
+        const mediaMap = new Map(uploads.map((r: any) => [r.block_id, r]));
+        const updatedBlocks = (tpl.blocks_json || blocksData).map((b: any) => {
+          const upload = mediaMap.get(b.id);
+          return upload ? { ...b, media_path: upload.media_path, media_type: upload.media_type } : b;
+        });
+        tpl = await updateTemplate(tpl.id, { blocks_json: updatedBlocks as any });
       }
 
       setTemplates(prev => editingId

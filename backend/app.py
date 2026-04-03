@@ -758,7 +758,15 @@ async def tg_connect(req: TgConnectRequest, request: Request, user: AdminUser, d
 
 @app.post("/api/tg/verify", response_model=TgAccountOut)
 async def tg_verify(req: TgVerifyRequest, user: CurrentUser, db: DB):
-    account = await verify_code(req.phone, req.code, req.password_2fa)
+    try:
+        account = await verify_code(req.phone, req.code, req.password_2fa)
+    except Exception as e:
+        msg = str(e)
+        if "PasswordHashInvalid" in msg or "password" in msg.lower():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Неверный 2FA пароль")
+        if "PhoneCodeInvalid" in msg or "code" in msg.lower():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Неверный код подтверждения")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Ошибка верификации: {msg[:200]}")
     # Set org_id on the newly connected account
     result = await db.execute(select(TgAccount).where(TgAccount.id == account.id))
     tg_acc = result.scalar_one_or_none()
