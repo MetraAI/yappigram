@@ -105,6 +105,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return false;
   });
   const [isOrgTeam, setIsOrgTeam] = useState(false);
+  const [dashLoading, setDashLoading] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
 
   // Init client-side state
@@ -220,11 +221,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           {!isTg && (
             <button
-              onClick={() => { window.location.href = "https://metra-ai.org"; }}
-              className="flex items-center gap-2 text-sm text-emerald-400 hover:text-emerald-300 transition-colors mt-auto px-3 py-2"
+              onClick={() => { if (dashLoading) return; setDashLoading(true); window.location.href = "https://metra-ai.org"; }}
+              disabled={dashLoading}
+              className={`flex items-center gap-2 text-sm text-emerald-400 hover:text-emerald-300 transition-colors mt-auto px-3 py-2 ${dashLoading ? 'opacity-50 pointer-events-none' : ''}`}
             >
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-              Обратно в дашборд
+              {dashLoading ? (
+                <div className="w-4 h-4 border-2 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" />
+              ) : (
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+              )}
+              {dashLoading ? 'Загрузка...' : 'Обратно в дашборд'}
             </button>
           )}
         </nav>
