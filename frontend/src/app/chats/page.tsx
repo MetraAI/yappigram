@@ -699,14 +699,12 @@ function ChatsContent() {
       sendingRef.current = true;
       setSending(true);
       try {
-        const results: any[] = await api(`/api/messages/${selected.id}/send-template-blocks?template_id=${tpl.id}`, {
+        await api(`/api/messages/${selected.id}/send-template-blocks?template_id=${tpl.id}`, {
           method: "POST",
         });
-        if (Array.isArray(results)) {
-          for (const msg of results) {
-            setMessages((prev: any[]) => prev.some((m: any) => m.id === msg.id) ? prev : [...prev, msg]);
-          }
-        }
+        // Reload all messages to get complete data
+        const fresh = await api(`/api/messages/${selected.id}?limit=200`);
+        if (Array.isArray(fresh)) setMessages(fresh);
       } catch (e: any) { alert(e.message); }
       sendingRef.current = false;
       setSending(false);

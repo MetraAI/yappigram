@@ -1693,15 +1693,26 @@ async def send_template_blocks(contact_id: UUID, user: CurrentUser, db: DB, temp
         if media_type == "text":
             media_type = None
 
-        try:
-            tg_msg_id = await send_message(
-                contact.tg_account_id, contact.real_tg_id,
-                text=text,
-                file_path=block_media_path,
-                media_type=media_type if block_media_path else None,
-            )
-        except ValueError as e:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Block {i+1} failed: {e}")
+        # Skip empty blocks (no text, no media)
+        if not text and not block_media_path:
+            continue
+
+        # Retry on SQLite lock (Telethon session file contention)
+        tg_msg_id = None
+        for attempt in range(3):
+            try:
+                tg_msg_id = await send_message(
+                    contact.tg_account_id, contact.real_tg_id,
+                    text=text,
+                    file_path=block_media_path,
+                    media_type=media_type if block_media_path else None,
+                )
+                break
+            except Exception as e:
+                if "database is locked" in str(e) and attempt < 2:
+                    await asyncio.sleep(1)
+                    continue
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Block {i+1} failed: {e}")
 
         msg = Message(
             contact_id=contact.id,
@@ -1714,12 +1725,28 @@ async def send_template_blocks(contact_id: UUID, user: CurrentUser, db: DB, temp
         )
         db.add(msg)
         sent_messages.append(msg)
+        # Small gap between sends to avoid SQLite lock
+        if i < len(blocks) - 1:
+            await asyncio.sleep(0.5)
 
     contact.last_message_at = func.now()
     await db.commit()
     for m in sent_messages:
         await db.refresh(m)
-    return [{"id": str(m.id), "tg_message_id": m.tg_message_id, "content": m.content, "media_type": m.media_type} for m in sent_messages]
+    # Return full message objects for frontend display
+    return [
+        {
+            "id": str(m.id),
+            "tg_message_id": m.tg_message_id,
+            "content": m.content,
+            "media_type": m.media_type,
+            "media_path": m.media_path,
+            "direction": m.direction,
+            "sent_by": str(m.sent_by) if m.sent_by else None,
+            "created_at": m.created_at.isoformat() + "Z" if m.created_at else None,
+        }
+        for m in sent_messages
+    ]
 
 
 @app.patch("/api/messages/{contact_id}/read")
