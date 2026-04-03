@@ -738,7 +738,7 @@ async def tg_verify(req: TgVerifyRequest, user: CurrentUser, db: DB):
 
 @app.get("/api/tg/status", response_model=list[TgAccountOut])
 async def tg_status(user: CurrentUser, db: DB):
-    from telegram import _clients
+    from telegram import _clients, _account_status, _account_errors
     query = select(TgAccount).where(TgAccount.org_id == _org_id(user), TgAccount.is_active.is_(True))
     # Non-admin users only see accounts assigned to them
     if user.role not in ("super_admin", "admin"):

@@ -44,6 +44,11 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 # Active Telethon clients: tg_account_id -> TelegramClient
 _clients: dict[UUID, TelegramClient] = {}
 
+# Per-account error tracking for circuit breaker
+_account_errors: dict[UUID, int] = {}  # consecutive error count
+_account_status: dict[UUID, str] = {}  # "connected" | "reconnecting" | "failed" | "disabled"
+MAX_CONSECUTIVE_ERRORS = 10  # disable account handler after this many errors
+
 # Pending auth flows: phone -> (TelegramClient, created_at)
 _pending_auth: dict[str, tuple[TelegramClient, float]] = {}
 
@@ -316,7 +321,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             if media_type and ext is not None:
                 filename = f"{contact.id}_{msg_obj.id}{ext}"
                 filepath = os.path.join(MEDIA_DIR, filename)
-                actual_path = await msg_obj.download_media(file=filepath)
+                actual_path = await asyncio.wait_for(msg_obj.download_media(file=filepath), timeout=60)
                 if actual_path:
                     # Compress photos to save disk space
                     if media_type == "photo":
@@ -572,7 +577,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             if media_type and ext is not None:
                 filename = f"{contact.id}_{msg_obj.id}{ext}"
                 filepath = os.path.join(MEDIA_DIR, filename)
-                actual_path = await msg_obj.download_media(file=filepath)
+                actual_path = await asyncio.wait_for(msg_obj.download_media(file=filepath), timeout=60)
                 if actual_path:
                     # Compress photos to save disk space
                     if media_type == "photo":
@@ -686,8 +691,18 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         print(f"[NOTIFY] Message notification failed: {e}")
       except Exception as e:
         import traceback
-        print(f"[LISTENER] Error processing incoming message: {e}")
-        traceback.print_exc()
+        _account_errors[account.id] = _account_errors.get(account.id, 0) + 1
+        err_count = _account_errors[account.id]
+        print(f"[LISTENER] Error processing incoming message (account {account.phone}, errors={err_count}): {e}")
+        if err_count <= 3:
+            traceback.print_exc()
+        if err_count >= MAX_CONSECUTIVE_ERRORS:
+            print(f"[LISTENER] Account {account.phone} disabled after {err_count} consecutive errors")
+            _account_status[account.id] = "disabled"
+      else:
+        # Reset error counter on success
+        _account_errors[account.id] = 0
+        _account_status[account.id] = "connected"
 
     @client.on(events.MessageEdited)
     async def on_message_edited(event):
@@ -802,27 +817,39 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         "message_id": str(msg.id),
                     }, org_id=account.org_id)
 
-    # Run client in background with auto-reconnect
+    # Run client in background with auto-reconnect and exponential backoff
+    _account_status[account.id] = "connected"
+
     async def _run_with_reconnect():
+        reconnect_delay = 5
         while True:
             try:
+                _account_status[account.id] = "connected"
+                reconnect_delay = 5  # Reset on successful connection
                 await client.run_until_disconnected()
             except Exception as e:
                 print(f"[TELETHON] Client for {account.phone} disconnected: {e}")
             # Check if we were intentionally removed
             if account.id not in _clients:
+                _account_status[account.id] = "disabled"
                 break
-            print(f"[TELETHON] Reconnecting {account.phone} in 5s...")
-            await asyncio.sleep(5)
+            _account_status[account.id] = "reconnecting"
+            print(f"[TELETHON] Reconnecting {account.phone} in {reconnect_delay}s...")
+            await asyncio.sleep(reconnect_delay)
             try:
                 await client.connect()
                 if await client.is_user_authorized():
                     print(f"[TELETHON] Reconnected {account.phone}")
+                    _account_status[account.id] = "connected"
+                    reconnect_delay = 5
                 else:
                     print(f"[TELETHON] {account.phone} no longer authorized, stopping")
+                    _account_status[account.id] = "failed"
                     break
             except Exception as e:
                 print(f"[TELETHON] Reconnect failed for {account.phone}: {e}")
+                reconnect_delay = min(reconnect_delay * 2, 300)  # Exponential backoff, max 5 min
+                _account_status[account.id] = "reconnecting"
 
     asyncio.create_task(_run_with_reconnect())
 
