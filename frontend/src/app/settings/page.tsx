@@ -177,7 +177,11 @@ function TelegramSection() {
       <div className="mt-4 bg-gradient-to-br from-surface-card to-surface border border-surface-border rounded-2xl p-5 space-y-3">
         {step === "idle" ? (
           <>
-            <Input label="Номер телефона" value={phone} onChange={setPhone} placeholder="+79001234567" />
+            <Input label="Номер телефона" value={phone} onChange={(v) => {
+              // Auto-format: strip non-digits, ensure + prefix
+              const digits = v.replace(/[^\d+]/g, "");
+              setPhone(digits.startsWith("+") ? digits : "+" + digits);
+            }} placeholder="+79001234567" />
             <Button onClick={connect} disabled={loading || !phone}>
               {loading ? "Отправка кода..." : "Подключить аккаунт"}
             </Button>

@@ -126,28 +126,46 @@ async def start_connect(phone: str) -> dict:
     import logging
     log = logging.getLogger("tg_connect")
     log.info(f"start_connect called for phone={phone}")
-    client = TelegramClient(
-        _session_path(phone),
-        settings.TG_API_ID,
-        settings.TG_API_HASH,
-    )
-    await client.connect()
-    print(f"[TG_CONNECT] connected, is_authorized={await client.is_user_authorized()}", flush=True)
-    try:
-        result = await client.send_code_request(phone, force_sms=True)
-        print(f"[TG_CONNECT] send_code OK: type={type(result.type).__name__}, hash={result.phone_code_hash[:8]}...", flush=True)
-        # Disconnect previous pending client for same phone
-        import time
-        if phone in _pending_auth:
-            old_client, _ = _pending_auth.pop(phone)
-            await old_client.disconnect()
-        _cleanup_pending_auth()
-        _pending_auth[phone] = (client, time.time())
-        return {"type": type(result.type).__name__, "hash": result.phone_code_hash[:8]}
-    except Exception as e:
-        print(f"[TG_CONNECT] FAILED: {type(e).__name__}: {e}", flush=True)
-        await client.disconnect()
-        raise
+    session_file = _session_path(phone)
+
+    for attempt in range(2):
+        client = TelegramClient(
+            session_file,
+            settings.TG_API_ID,
+            settings.TG_API_HASH,
+        )
+        await client.connect()
+        print(f"[TG_CONNECT] connected, is_authorized={await client.is_user_authorized()}", flush=True)
+        try:
+            result = await client.send_code_request(phone, force_sms=True)
+            print(f"[TG_CONNECT] send_code OK: type={type(result.type).__name__}, hash={result.phone_code_hash[:8]}...", flush=True)
+            # Disconnect previous pending client for same phone
+            import time
+            if phone in _pending_auth:
+                old_client, _ = _pending_auth.pop(phone)
+                await old_client.disconnect()
+            _cleanup_pending_auth()
+            _pending_auth[phone] = (client, time.time())
+            return {"type": type(result.type).__name__, "hash": result.phone_code_hash[:8]}
+        except (ConnectionError, OSError) as e:
+            print(f"[TG_CONNECT] Connection error (attempt {attempt+1}): {e}", flush=True)
+            await client.disconnect()
+            if attempt == 0:
+                # Delete stale session and retry with fresh one
+                import glob
+                for f in glob.glob(session_file + "*"):
+                    try:
+                        os.remove(f)
+                        print(f"[TG_CONNECT] Removed stale session: {f}", flush=True)
+                    except Exception:
+                        pass
+                continue
+            raise
+        except Exception as e:
+            print(f"[TG_CONNECT] FAILED: {type(e).__name__}: {e}", flush=True)
+            await client.disconnect()
+            raise
+    raise ConnectionError("Failed to connect after retries")
 
 
 async def verify_code(phone: str, code: str, password_2fa: str | None = None) -> TgAccount:
