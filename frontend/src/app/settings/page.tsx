@@ -306,13 +306,21 @@ function TagsSection() {
 // Template Block Editor
 // ============================================================
 
+interface MediaFileEntry {
+  path: string;
+  type: string;
+  file?: File;
+}
+
 interface EditorBlock {
   id: string;
-  type: "text" | "photo" | "video" | "video_note" | "voice" | "document";
+  type: "text" | "photo" | "video" | "video_note" | "voice" | "document" | "media_group";
   content: string;
   media_path: string | null;
   media_type: string | null;
   mediaFile?: File | null;
+  media_files?: MediaFileEntry[];
+  mediaNewFiles?: File[];
   delay_after: number;
 }
 
@@ -320,6 +328,7 @@ const BLOCK_TYPE_LABELS: Record<string, { icon: string; label: string }> = {
   text: { icon: "💬", label: "Текст" },
   photo: { icon: "📷", label: "Фото" },
   video: { icon: "🎬", label: "Видео" },
+  media_group: { icon: "🖼", label: "Альбом" },
   video_note: { icon: "🔵", label: "Кружок" },
   voice: { icon: "🎤", label: "Голосовое" },
   document: { icon: "📄", label: "Документ" },
@@ -453,12 +462,13 @@ function TemplatesSection({ canManage }: { canManage: boolean }) {
   // Save
   const handleSave = async () => {
     if (!title.trim() || saving) return;
-    const hasContent = blocks.some(b => b.content.trim() || b.mediaFile || b.media_path);
+    const hasContent = blocks.some(b => b.content.trim() || b.mediaFile || b.media_path || (b.media_files?.length || 0) > 0 || (b.mediaNewFiles?.length || 0) > 0);
     if (!hasContent) return;
     setSaving(true);
     try {
       const blocksData = blocks.map(b => ({
-        id: b.id, type: b.type, content: b.content, media_path: b.media_path, media_type: b.media_type, delay_after: b.delay_after,
+        id: b.id, type: b.type, content: b.content, media_path: b.media_path, media_type: b.media_type,
+        media_files: b.media_files || [], delay_after: b.delay_after,
       }));
 
       let tpl: Template;
@@ -493,6 +503,32 @@ function TemplatesSection({ canManage }: { canManage: boolean }) {
           return upload ? { ...b, media_path: upload.media_path, media_type: upload.media_type } : b;
         });
         tpl = await updateTemplate(tpl.id, { blocks_json: updatedBlocks as any });
+      }
+
+      // Upload media_group files (multiple files per block)
+      const groupBlocks = blocks.filter(b => b.type === "media_group" && (b.mediaNewFiles?.length || 0) > 0);
+      if (groupBlocks.length > 0) {
+        let currentBlocks = tpl.blocks_json || blocksData;
+        for (const block of groupBlocks) {
+          const uploads: any[] = [];
+          for (const file of (block.mediaNewFiles || [])) {
+            const formData = new FormData();
+            formData.append("file", file);
+            const sendAs = file.type.startsWith("video") ? "video" : "photo";
+            const result = await api(`/api/templates/${tpl.id}/upload-block-media?block_id=${block.id}_${uploads.length}&send_as=${sendAs}`, {
+              method: "POST", body: formData, headers: {},
+            });
+            uploads.push({ path: result.media_path, type: result.media_type });
+          }
+          // Merge with existing media_files
+          currentBlocks = currentBlocks.map((b: any) => {
+            if (b.id === block.id) {
+              return { ...b, media_files: [...(b.media_files || []), ...uploads] };
+            }
+            return b;
+          });
+        }
+        tpl = await updateTemplate(tpl.id, { blocks_json: currentBlocks as any });
       }
 
       setTemplates(prev => editingId
@@ -688,8 +724,8 @@ function TemplatesSection({ canManage }: { canManage: boolean }) {
                     />
                   )}
 
-                  {/* Media upload for non-text blocks */}
-                  {block.type !== "text" && (
+                  {/* Media upload — single file for regular blocks */}
+                  {block.type !== "text" && block.type !== "media_group" && (
                     <div className="flex items-center gap-2 flex-wrap">
                       {block.media_path && !block.mediaFile && (
                         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-brand/5 border border-brand/20 text-xs text-brand">
@@ -713,6 +749,47 @@ function TemplatesSection({ canManage }: { canManage: boolean }) {
                           } onChange={e => { const f = e.target.files?.[0]; if (f) handleBlockFile(idx, f); }} />
                         </label>
                       )}
+                    </div>
+                  )}
+
+                  {/* Media group — multiple files */}
+                  {block.type === "media_group" && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {(block.media_files || []).map((mf, fi) => (
+                          <div key={fi} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-brand/5 border border-brand/20 text-xs text-brand">
+                            {mf.type === "video" ? "🎬" : "📷"} {mf.path?.split("/").pop() || mf.file?.name}
+                            <button onClick={() => {
+                              const updated = [...(block.media_files || [])];
+                              updated.splice(fi, 1);
+                              updateBlock(idx, { media_files: updated });
+                            }} className="text-red-400 hover:text-red-300 ml-0.5">x</button>
+                          </div>
+                        ))}
+                        {(block.mediaNewFiles || []).map((f, fi) => (
+                          <div key={`new-${fi}`} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-xs text-emerald-400">
+                            {f.type.startsWith("video") ? "🎬" : "📷"} {f.name}
+                            <button onClick={() => {
+                              const updated = [...(block.mediaNewFiles || [])];
+                              updated.splice(fi, 1);
+                              updateBlock(idx, { mediaNewFiles: updated });
+                            }} className="text-red-400 hover:text-red-300 ml-0.5">x</button>
+                          </div>
+                        ))}
+                      </div>
+                      {((block.media_files?.length || 0) + (block.mediaNewFiles?.length || 0)) < 10 && (
+                        <label className="cursor-pointer inline-flex px-3 py-1.5 rounded-lg border border-dashed border-surface-border text-xs text-slate-400 hover:border-brand/30 hover:text-slate-300 transition-colors">
+                          + Добавить фото/видео (до 10)
+                          <input type="file" className="hidden" accept="image/*,video/*" multiple onChange={e => {
+                            const files = Array.from(e.target.files || []);
+                            const maxAdd = 10 - (block.media_files?.length || 0) - (block.mediaNewFiles?.length || 0);
+                            const toAdd = files.slice(0, maxAdd);
+                            updateBlock(idx, { mediaNewFiles: [...(block.mediaNewFiles || []), ...toAdd] });
+                            e.target.value = "";
+                          }} />
+                        </label>
+                      )}
+                      <p className="text-[10px] text-slate-600">{(block.media_files?.length || 0) + (block.mediaNewFiles?.length || 0)}/10 файлов</p>
                     </div>
                   )}
                 </div>
@@ -749,7 +826,27 @@ function TemplatesSection({ canManage }: { canManage: boolean }) {
                         </div>
                       )}
                       <div className={`max-w-[85%] ml-auto ${block.type === "voice" ? "" : ""}`}>
-                        {block.type === "video_note" ? (
+                        {block.type === "media_group" ? (
+                          <div className="bg-[#2b5278] rounded-xl overflow-hidden">
+                            <div className="grid grid-cols-2 gap-0.5 p-0.5">
+                              {[...(block.media_files || []), ...(block.mediaNewFiles || []).map(f => ({ file: f, type: f.type.startsWith("video") ? "video" : "photo" }))].slice(0, 4).map((mf: any, i: number) => (
+                                <div key={i} className="aspect-square bg-gradient-to-br from-brand/10 to-purple-500/10 flex items-center justify-center overflow-hidden">
+                                  {mf.file ? (
+                                    mf.type === "video" ? <span className="text-lg">🎬</span> : <img src={URL.createObjectURL(mf.file)} alt="" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <span className="text-lg">{mf.type === "video" ? "🎬" : "📷"}</span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                            {block.content && (
+                              <div className="px-3 py-2">
+                                <p className="text-sm text-white/90 whitespace-pre-wrap break-words">{block.content}</p>
+                                <div className="flex justify-end mt-0.5"><span className="text-[10px] text-white/30">12:00 ✓✓</span></div>
+                              </div>
+                            )}
+                          </div>
+                        ) : block.type === "video_note" ? (
                           <div className="flex justify-end">
                             <div className="w-48 h-48 rounded-full bg-gradient-to-br from-brand/20 to-purple-500/20 border-2 border-brand/30 flex items-center justify-center">
                               {block.mediaFile ? (

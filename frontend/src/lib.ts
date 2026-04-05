@@ -495,10 +495,11 @@ export async function pressInlineButton(contactId: string, messageId: string, ca
 
 export interface TemplateBlock {
   id: string;
-  type: "text" | "photo" | "video" | "video_note" | "voice" | "document";
+  type: "text" | "photo" | "video" | "video_note" | "voice" | "document" | "media_group";
   content?: string | null;
   media_path?: string | null;
   media_type?: string | null;
+  media_files?: { path: string; type: string }[];
   delay_after: number;
 }
 

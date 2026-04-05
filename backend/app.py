@@ -1747,7 +1747,53 @@ async def send_template_single_block(
     media_type = block.get("media_type") or block.get("type")
     if media_type == "text":
         media_type = None
-    block_media_path = os.path.join(MEDIA_DIR, block["media_path"]) if block.get("media_path") else None
+
+    # Media group: multiple files in one block
+    media_files = block.get("media_files")
+    if media_files and len(media_files) > 1:
+        from telegram import send_media_group
+        file_paths = [os.path.join(MEDIA_DIR, f["path"]) for f in media_files if f.get("path")]
+        if not file_paths:
+            return {"status": "skipped"}
+        tg_msg_ids = None
+        for attempt in range(5):
+            try:
+                tg_msg_ids = await send_media_group(
+                    contact.tg_account_id, contact.real_tg_id,
+                    file_paths=file_paths, caption=text,
+                )
+                break
+            except Exception as e:
+                if "database is locked" in str(e) and attempt < 4:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e))
+        # Save each media as a separate message
+        msgs = []
+        for i, tg_id in enumerate(tg_msg_ids or []):
+            mf = media_files[i] if i < len(media_files) else {}
+            msg = Message(
+                contact_id=contact.id, tg_message_id=tg_id, direction="outgoing",
+                content=text if i == 0 else None,
+                media_type=mf.get("type", "photo"),
+                media_path=mf.get("path"), sent_by=user.id,
+            )
+            db.add(msg)
+            msgs.append(msg)
+        contact.last_message_at = func.now()
+        await db.commit()
+        for m in msgs:
+            await db.refresh(m)
+        return msgs[0] if msgs else {"status": "sent"}
+
+    # Single media
+    block_media_path = None
+    if block.get("media_path"):
+        block_media_path = os.path.join(MEDIA_DIR, block["media_path"])
+    elif media_files and len(media_files) == 1:
+        block_media_path = os.path.join(MEDIA_DIR, media_files[0]["path"])
+        media_type = media_files[0].get("type", media_type)
+
     if not text and not block_media_path:
         return {"status": "skipped"}
     # Retry on SQLite lock
@@ -1768,7 +1814,8 @@ async def send_template_single_block(
     msg = Message(
         contact_id=contact.id, tg_message_id=tg_msg_id, direction="outgoing",
         content=text, media_type=media_type if block_media_path else None,
-        media_path=block.get("media_path"), sent_by=user.id,
+        media_path=block.get("media_path") or (media_files[0]["path"] if media_files else None),
+        sent_by=user.id,
     )
     db.add(msg)
     contact.last_message_at = func.now()

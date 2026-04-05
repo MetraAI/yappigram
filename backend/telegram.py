@@ -949,6 +949,29 @@ async def send_message(
     return result.id
 
 
+async def send_media_group(
+    account_id: UUID,
+    tg_id: int,
+    file_paths: list[str],
+    caption: str | None = None,
+) -> list[int]:
+    """Send multiple photos/videos as a media group (album). Returns list of tg_message_ids."""
+    client = _clients.get(account_id)
+    if not client:
+        client = await _try_reconnect(account_id)
+    if not client:
+        raise ValueError("Telegram-аккаунт не подключён.")
+    # Telethon: send_file with list of files creates a media group
+    results = await client.send_file(
+        tg_id,
+        file_paths,
+        caption=caption or "",
+    )
+    if not isinstance(results, list):
+        results = [results]
+    return [r.id for r in results]
+
+
 async def forward_message(
     account_id: UUID,
     from_tg_id: int,
