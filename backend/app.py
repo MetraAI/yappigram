@@ -217,13 +217,18 @@ async def serve_media(file_path: str):
     is_inline = content_type.startswith("image/") or content_type.startswith("video/") or content_type.startswith("audio/")
     disposition = "inline" if is_inline else "attachment"
     raw_filename = os.path.basename(safe_path)
-    # Strip UUID_msgid prefix from document filenames (e.g. "abc123_456_report.pdf" -> "report.pdf")
-    # Telethon saves as "{contactid}_{msgid}{ext}" but for documents may produce "{contactid}_{msgid}_originalname.ext"
+    # For Telethon files like "{contactid}_{msgid}.ext" — use a clean name with extension
     import re
-    cleaned = re.sub(r"^[0-9a-f-]+_\d+", "", raw_filename, count=1)
-    # Remove leading underscores/dots left after stripping prefix
-    cleaned = cleaned.lstrip("_").lstrip(".")
-    filename = cleaned if cleaned else raw_filename
+    # Check if filename is just UUID_msgid.ext (no original name embedded)
+    match = re.match(r"^[0-9a-f-]+_\d+(\.[\w]+)$", raw_filename)
+    if match:
+        # Technical name only — use "file.ext" as download name
+        ext_part = match.group(1)
+        filename = f"file{ext_part}"
+    else:
+        # Try to extract original name after UUID_msgid_ prefix
+        cleaned = re.sub(r"^[0-9a-f-]+_\d+_?", "", raw_filename, count=1)
+        filename = cleaned if cleaned and len(cleaned) > 1 else raw_filename
 
     return FileResponse(
         safe_path,
