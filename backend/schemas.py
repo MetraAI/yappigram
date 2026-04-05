@@ -207,12 +207,17 @@ class ContactUpdate(BaseModel):
 
 # --- Templates ---
 
+class TemplateMediaFileIn(BaseModel):
+    path: str
+    type: str = "photo"
+
 class TemplateBlockIn(BaseModel):
     id: str  # client-generated UUID for the block
-    type: str = "text"  # text | photo | video | video_note | voice | document
+    type: str = "text"  # text | photo | video | video_note | voice | document | media_group
     content: str | None = None  # text or caption
     media_path: str | None = None
     media_type: str | None = None
+    media_files: list[TemplateMediaFileIn] | None = None  # for media_group blocks
     delay_after: float = 0  # seconds to wait after this block
 
 class TemplateCreate(BaseModel):
