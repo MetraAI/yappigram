@@ -233,12 +233,22 @@ async def serve_media(file_path: str):
         cleaned = re.sub(r"^[0-9a-f-]+_\d+_?", "", raw_filename, count=1)
         filename = cleaned if cleaned and len(cleaned) > 1 else raw_filename
 
+    # Build Content-Disposition with RFC 5987 for non-ASCII filenames
+    from urllib.parse import quote as url_quote
+    try:
+        filename.encode("ascii")
+        cd_header = f'{disposition}; filename="{filename}"'
+    except UnicodeEncodeError:
+        ascii_name = "file" + os.path.splitext(filename)[1]
+        encoded = url_quote(filename)
+        cd_header = f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
+
     return FileResponse(
         safe_path,
         media_type=content_type,
         headers={
             "X-Content-Type-Options": "nosniff",
-            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "Content-Disposition": cd_header,
         },
     )
 
