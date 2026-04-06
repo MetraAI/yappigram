@@ -1108,17 +1108,24 @@ async def startup_listeners() -> None:
             authorized = await client.is_user_authorized()
             print(f"[STARTUP] {account.phone} authorized={authorized}")
             if authorized:
-                # Auto-migrate: save StringSession to DB if connected via file
+                # Auto-migrate: export SQLite session to StringSession in DB
                 if not account.session_string:
                     try:
-                        ss = client.session.save()
-                        async with async_session() as db_mig:
-                            res_mig = await db_mig.execute(select(TgAccount).where(TgAccount.id == account.id))
-                            acc_mig = res_mig.scalar_one_or_none()
-                            if acc_mig:
-                                acc_mig.session_string = ss
-                                await db_mig.commit()
-                                print(f"[STARTUP] Migrated {account.phone} session to StringSession in DB")
+                        # Create a StringSession from the connected client's auth data
+                        ss = StringSession()
+                        ss._dc_id = client.session.dc_id
+                        ss._port = client.session.port
+                        ss._server_address = client.session.server_address
+                        ss._auth_key = client.session.auth_key
+                        ss_str = ss.save()
+                        if ss_str and len(ss_str) > 10:
+                            async with async_session() as db_mig:
+                                res_mig = await db_mig.execute(select(TgAccount).where(TgAccount.id == account.id))
+                                acc_mig = res_mig.scalar_one_or_none()
+                                if acc_mig:
+                                    acc_mig.session_string = ss_str
+                                    await db_mig.commit()
+                                    print(f"[STARTUP] Migrated {account.phone} to StringSession ({len(ss_str)} chars)")
                     except Exception as e_mig:
                         print(f"[STARTUP] Could not migrate session for {account.phone}: {e_mig}")
 
