@@ -725,6 +725,21 @@ async def sso_auth(req: SsoAuthRequest, request: Request, db: DB):
 
     # Auto-create staff for SSO users
     if not user:
+        # Check if user has a personal_ Staff that should be migrated to org
+        if pf_org_id:
+            personal_org = f"personal_{pf_user_id}"
+            personal_result = await db.execute(
+                select(Staff).where(
+                    Staff.postforge_user_id == pf_user_id,
+                    Staff.postforge_org_id == personal_org,
+                    Staff.is_active.is_(True),
+                )
+            )
+            personal_user = personal_result.scalar_one_or_none()
+            if personal_user:
+                # Deactivate personal Staff — user moved to org
+                personal_user.is_active = False
+
         user = Staff(
             tg_user_id=synthetic_tg_id,
             tg_username=pf_email.split("@")[0] if pf_email else None,
@@ -751,6 +766,8 @@ async def sso_auth(req: SsoAuthRequest, request: Request, db: DB):
             changed = True
         if changed:
             await db.commit()
+
+    print(f"[SSO] user={pf_user_id} org={effective_org_id} role={crm_role} staff={user.id} name={user.name}", flush=True)
 
     return TokenResponse(
         access_token=create_token(user.id, "access"),
