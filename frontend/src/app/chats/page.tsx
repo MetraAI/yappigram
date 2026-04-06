@@ -258,6 +258,7 @@ function ChatsContent() {
 
   // Templates
   const [templates, setTemplates] = useState<Template[]>([]);
+  const [drafts, setDrafts] = useState<Map<string, string>>(new Map()); // contact_id -> draft text
   const [showTemplates, setShowTemplates] = useState(false);
   const [tplCategory, setTplCategory] = useState<string | null>(null);
 
@@ -379,6 +380,14 @@ function ChatsContent() {
   useEffect(() => {
     const acctId = filterAccountId || undefined;
     fetchTemplates(acctId).then(setTemplates).catch(console.error);
+    // Fetch drafts
+    api(`/api/drafts${acctId ? `?tg_account_id=${acctId}` : ""}`).then((d: any[]) => {
+      const m = new Map<string, string>();
+      for (const draft of d) {
+        if (draft.contact_id && draft.text) m.set(draft.contact_id, draft.text);
+      }
+      setDrafts(m);
+    }).catch(() => {});
   }, [filterAccountId]);
 
   // Re-fetch contacts when account filter changes (both normal + archived)
@@ -525,6 +534,9 @@ function ChatsContent() {
       api(`/api/messages/${selected.id}/topics`).then(setTopics).catch(console.error);
     }
     setReplyTo(null);
+    // Load draft into input if exists
+    const draft = drafts.get(selected.id);
+    setText(draft || "");
     setForwardMode(false);
     setForwardSelected(new Set());
     setShowUserInfo(false);
@@ -1095,7 +1107,12 @@ function ChatsContent() {
                         </span>
                       )}
                     </div>
-                    {c.last_message_content && (
+                    {drafts.has(c.id) ? (
+                      <p className="text-xs truncate mt-0.5 flex items-center gap-1">
+                        <span className="text-red-400 font-medium shrink-0">Черновик:</span>
+                        <span className="truncate text-slate-400">{drafts.get(c.id)}</span>
+                      </p>
+                    ) : c.last_message_content ? (
                       <p className={`text-xs truncate mt-0.5 flex items-center gap-1 ${
                         !unread.has(c.id) && c.last_message_direction === "incoming"
                           ? "text-white font-medium"
@@ -1112,7 +1129,7 @@ function ChatsContent() {
                         )}
                         <span className="truncate">{c.last_message_content}</span>
                       </p>
-                    )}
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">

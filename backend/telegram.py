@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
-from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
+from telethon.tl.functions.messages import GetBotCallbackAnswerRequest, GetAllDraftsRequest
 
 from config import settings
 from crypto import encrypt
@@ -1049,6 +1049,37 @@ async def press_inline_button(
         data=callback_data,
     ))
     return result.message or result.url
+
+
+async def get_drafts(account_id: UUID) -> list[dict]:
+    """Get all drafts for a TG account. Returns list of {peer_id, text, date}."""
+    client = _clients.get(account_id)
+    if not client:
+        return []
+    try:
+        result = await client(GetAllDraftsRequest())
+        drafts = []
+        for update in result.updates:
+            if hasattr(update, 'draft') and hasattr(update.draft, 'message') and update.draft.message:
+                peer_id = None
+                if hasattr(update, 'peer'):
+                    p = update.peer
+                    if hasattr(p, 'user_id'):
+                        peer_id = p.user_id
+                    elif hasattr(p, 'chat_id'):
+                        peer_id = -p.chat_id
+                    elif hasattr(p, 'channel_id'):
+                        peer_id = -1000000000000 - p.channel_id
+                if peer_id:
+                    drafts.append({
+                        "peer_id": peer_id,
+                        "text": update.draft.message,
+                        "date": update.draft.date.isoformat() if update.draft.date else None,
+                    })
+        return drafts
+    except Exception as e:
+        print(f"[DRAFTS] Error fetching drafts for {account_id}: {e}")
+        return []
 
 
 async def download_missing_media(account_id: UUID, chat_tg_id: int, tg_msg_id: int, contact_id: UUID) -> str | None:

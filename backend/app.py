@@ -156,6 +156,49 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Redis cache for hot paths
+_redis_cache = None
+
+async def _get_redis():
+    global _redis_cache
+    if _redis_cache is None:
+        try:
+            import redis.asyncio as aioredis
+            _redis_cache = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        except Exception:
+            pass
+    return _redis_cache
+
+async def cache_get(key: str) -> str | None:
+    r = await _get_redis()
+    if r:
+        try:
+            return await r.get(key)
+        except Exception:
+            pass
+    return None
+
+async def cache_set(key: str, value: str, ttl: int = 30):
+    r = await _get_redis()
+    if r:
+        try:
+            await r.set(key, value, ex=ttl)
+        except Exception:
+            pass
+
+async def cache_invalidate(pattern: str):
+    r = await _get_redis()
+    if r:
+        try:
+            keys = []
+            async for key in r.scan_iter(match=pattern):
+                keys.append(key)
+            if keys:
+                await r.delete(*keys)
+        except Exception:
+            pass
+
+
 # Media files served via custom endpoint with security headers
 import mimetypes
 
@@ -869,6 +912,38 @@ async def tg_disconnect(account_id: UUID, user: CurrentUser, db: DB):
 # ============================================================
 # Contacts
 # ============================================================
+
+@app.get("/api/drafts")
+async def get_drafts_endpoint(user: CurrentUser, db: DB, tg_account_id: UUID | None = None):
+    """Get Telegram drafts for user's accounts, matched to CRM contacts."""
+    from telegram import get_drafts
+    # Get accounts for this user's org
+    acct_result = await db.execute(
+        select(TgAccount.id).where(TgAccount.org_id == _org_id(user), TgAccount.is_active.is_(True))
+    )
+    account_ids = [r[0] for r in acct_result.all()]
+    if tg_account_id and tg_account_id in account_ids:
+        account_ids = [tg_account_id]
+
+    all_drafts = []
+    for aid in account_ids:
+        drafts = await get_drafts(aid)
+        for d in drafts:
+            # Match peer_id to CRM contact
+            contact_result = await db.execute(
+                select(Contact.id, Contact.alias).where(
+                    Contact.tg_account_id == aid,
+                    Contact.real_tg_id == d["peer_id"],
+                )
+            )
+            row = contact_result.first()
+            if row:
+                d["contact_id"] = str(row[0])
+                d["contact_alias"] = row[1]
+                d["tg_account_id"] = str(aid)
+                all_drafts.append(d)
+    return all_drafts
+
 
 @app.get("/api/contacts", response_model=list[ContactOut])
 async def list_contacts(
