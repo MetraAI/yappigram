@@ -58,7 +58,7 @@ async def process_scheduled_messages():
                     select(ScheduledMessage).where(
                         ScheduledMessage.status == "pending",
                         ScheduledMessage.scheduled_at <= now,
-                    )
+                    ).with_for_update(skip_locked=True)
                 )
                 due = list(result.scalars().all())
                 for sm in due:

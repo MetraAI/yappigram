@@ -373,7 +373,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 if actual_path:
                     # Compress photos to save disk space
                     if media_type == "photo":
-                        actual_path = _compress_photo(actual_path)
+                        actual_path = await asyncio.to_thread(_compress_photo, actual_path)
                     media_path = os.path.basename(actual_path)
                 else:
                     media_path = filename
@@ -636,7 +636,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                 if actual_path:
                     # Compress photos to save disk space
                     if media_type == "photo":
-                        actual_path = _compress_photo(actual_path)
+                        actual_path = await asyncio.to_thread(_compress_photo, actual_path)
                     media_path = os.path.basename(actual_path)
                 else:
                     media_path = filename
@@ -1152,7 +1152,7 @@ async def download_missing_media(account_id: UUID, chat_tg_id: int, tg_msg_id: i
         actual_path = await asyncio.wait_for(msg.download_media(file=filepath), timeout=60)
         if actual_path:
             if media_type == "photo":
-                actual_path = _compress_photo(actual_path)
+                actual_path = await asyncio.to_thread(_compress_photo, actual_path)
             return os.path.basename(actual_path)
         return filename
     except Exception as e:

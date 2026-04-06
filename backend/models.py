@@ -106,7 +106,7 @@ class Contact(Base):
 
     # CRM data
     assigned_to = Column(UUID(as_uuid=True), ForeignKey("staff.id"), nullable=True)
-    tags = Column(ARRAY(String), default=list)
+    tags = Column(ARRAY(String), default=lambda: [])
     notes = Column(Text)
     is_archived = Column(Boolean, default=False)
 
@@ -123,7 +123,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=False)
+    contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
     tg_message_id = Column(Integer, nullable=True)
     direction = Column(String, nullable=False)  # incoming | outgoing
     content = Column(Text)
@@ -136,7 +136,7 @@ class Message(Base):
 
     # Reply-to
     reply_to_tg_msg_id = Column(Integer, nullable=True)
-    reply_to_msg_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=True)
+    reply_to_msg_id = Column(UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
     reply_to_content_preview = Column(String(200), nullable=True)
 
     # Forward
@@ -166,7 +166,7 @@ class ScheduledMessage(Base):
     __tablename__ = "scheduled_messages"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=False)
+    contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
     content = Column(Text, nullable=True)
     media_path = Column(String, nullable=True)
     media_type = Column(String, nullable=True)
@@ -206,20 +206,22 @@ class BotInvite(Base):
 class StaffTgAccount(Base):
     """Many-to-many: which staff can see which TG accounts' chats."""
     __tablename__ = "staff_tg_accounts"
+    __table_args__ = (UniqueConstraint("staff_id", "tg_account_id", name="uq_staff_tg_account"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    staff_id = Column(UUID(as_uuid=True), ForeignKey("staff.id"), nullable=False)
-    tg_account_id = Column(UUID(as_uuid=True), ForeignKey("tg_accounts.id"), nullable=False)
+    staff_id = Column(UUID(as_uuid=True), ForeignKey("staff.id", ondelete="CASCADE"), nullable=False)
+    tg_account_id = Column(UUID(as_uuid=True), ForeignKey("tg_accounts.id", ondelete="CASCADE"), nullable=False)
     assigned_at = Column(DateTime, default=func.now())
 
 
 class PinnedChat(Base):
     """Org-wide pinned chats (shared across all staff in same workspace)."""
     __tablename__ = "pinned_chats"
+    __table_args__ = (UniqueConstraint("staff_id", "contact_id", "org_id", name="uq_pinned_chat"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    staff_id = Column(UUID(as_uuid=True), ForeignKey("staff.id"), nullable=False)
-    contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=False)
+    staff_id = Column(UUID(as_uuid=True), ForeignKey("staff.id", ondelete="CASCADE"), nullable=False)
+    contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
     org_id = Column(String, nullable=True, index=True)
     pinned_at = Column(DateTime, default=func.now())
 
@@ -266,9 +268,9 @@ class Broadcast(Base):
 
     # Targeting
     tg_account_id = Column(UUID(as_uuid=True), ForeignKey("tg_accounts.id"), nullable=False)
-    tag_filter = Column(ARRAY(String), default=list)  # only contacts with these tags (empty = all)
+    tag_filter = Column(ARRAY(String), default=lambda: [])  # only contacts with these tags (empty = all)
     max_recipients = Column(Integer, nullable=True)  # Random N from filtered set
-    contact_ids = Column(ARRAY(UUID(as_uuid=True)), default=list)  # Manual selection
+    contact_ids = Column(ARRAY(UUID(as_uuid=True)), default=lambda: [])  # Manual selection
 
     # Delay between sends (seconds)
     delay_seconds = Column(Integer, default=1)  # 1s to 3600s
@@ -289,10 +291,11 @@ class Broadcast(Base):
 class BroadcastRecipient(Base):
     """Individual recipient status for a broadcast."""
     __tablename__ = "broadcast_recipients"
+    __table_args__ = (UniqueConstraint("broadcast_id", "contact_id", name="uq_broadcast_recipient"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     broadcast_id = Column(UUID(as_uuid=True), ForeignKey("broadcasts.id", ondelete="CASCADE"), nullable=False)
-    contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=False)
+    contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
     status = Column(String, default="pending")  # pending | sent | failed
     sent_at = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)
@@ -303,7 +306,7 @@ class MessageEditHistory(Base):
     __tablename__ = "message_edit_history"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=False)
+    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False)
     old_content = Column(Text, nullable=True)
     new_content = Column(Text, nullable=True)
     edited_at = Column(DateTime, default=func.now())

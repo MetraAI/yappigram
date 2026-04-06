@@ -234,8 +234,10 @@ async def serve_media(file_path: str):
     # If no extension, try to detect from file header (magic bytes)
     if not content_type or content_type == "application/octet-stream":
         try:
-            with open(safe_path, "rb") as f:
-                header = f.read(16)
+            def _read_header():
+                with open(safe_path, "rb") as f:
+                    return f.read(16)
+            header = await asyncio.to_thread(_read_header)
             if header[:8] == b'\x89PNG\r\n\x1a\n':
                 content_type = "image/png"
             elif header[:3] == b'\xff\xd8\xff':
@@ -1277,16 +1279,12 @@ async def create_group_endpoint(req: CreateGroupRequest, user: AdminUser, db: DB
     if not r.scalar_one_or_none():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "TG account not found in your workspace")
 
-    # Resolve CRM contact IDs to real TG IDs (org-scoped)
-    member_tg_ids = []
-    for cid in req.member_contact_ids:
-        r = await db.execute(select(Contact).where(
-            Contact.id == cid,
-            Contact.tg_account_id.in_(_org_accounts_subq(user)),
-        ))
-        c = r.scalar_one_or_none()
-        if c and c.real_tg_id:
-            member_tg_ids.append(c.real_tg_id)
+    # Batch-load CRM contacts to resolve real TG IDs (avoid N+1)
+    r = await db.execute(select(Contact).where(
+        Contact.id.in_(req.member_contact_ids),
+        Contact.tg_account_id.in_(_org_accounts_subq(user)),
+    ))
+    member_tg_ids = [c.real_tg_id for c in r.scalars().all() if c.real_tg_id]
 
     chat_id = await create_group(req.tg_account_id, req.title, member_tg_ids)
 
@@ -1807,8 +1805,7 @@ async def send_media(
     MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
     if len(data) > MAX_UPLOAD_SIZE:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large (max 50MB)")
-    with open(filepath, "wb") as f:
-        f.write(data)
+    await asyncio.to_thread(lambda: open(filepath, "wb").write(data))
 
     # Send via Telethon
     try:
@@ -2116,12 +2113,16 @@ async def forward_msg(contact_id: UUID, req: ForwardMessage, user: CurrentUser, 
     if target.status != "approved":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Target contact not approved")
 
-    # Get source messages (keep order, preserve content/media for CRM records)
+    # Batch-load source messages (avoid N+1 queries)
+    result = await db.execute(
+        select(Message).where(Message.id.in_(req.message_ids), Message.contact_id == contact_id)
+    )
+    all_msgs = {str(m.id): m for m in result.scalars().all()}
+    # Preserve original order from request
     src_messages = []
     tg_msg_ids = []
     for msg_id in req.message_ids:
-        rr = await db.execute(select(Message).where(Message.id == msg_id, Message.contact_id == contact_id))
-        msg = rr.scalar_one_or_none()
+        msg = all_msgs.get(str(msg_id))
         if msg and msg.tg_message_id:
             tg_msg_ids.append(msg.tg_message_id)
             src_messages.append(msg)
@@ -2464,8 +2465,7 @@ async def template_upload_media(
     MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large (max 50MB)")
-    with open(filepath, "wb") as f:
-        f.write(content)
+    await asyncio.to_thread(lambda: open(filepath, "wb").write(content))
 
     if send_as != "auto":
         media_type = send_as
@@ -2543,8 +2543,7 @@ async def template_upload_block_media(
     MAX_UPLOAD_SIZE = 50 * 1024 * 1024
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large (max 50MB)")
-    with open(filepath, "wb") as f:
-        f.write(content)
+    await asyncio.to_thread(lambda: open(filepath, "wb").write(content))
 
     if send_as != "auto":
         media_type = send_as
@@ -2866,8 +2865,7 @@ async def broadcast_upload_media(
     MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large (max 50MB)")
-    with open(filepath, "wb") as f:
-        f.write(content)
+    await asyncio.to_thread(lambda: open(filepath, "wb").write(content))
 
     # Auto-detect or use explicit type
     if send_as != "auto":

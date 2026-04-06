@@ -38,3 +38,12 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Startup validation: warn about insecure defaults
+import warnings as _warnings
+if settings.JWT_SECRET in ("change-me", ""):
+    _warnings.warn("JWT_SECRET is using default value — set a secure secret in .env!", stacklevel=1)
+if "changeme" in settings.DATABASE_URL:
+    _warnings.warn("DATABASE_URL contains default password 'changeme' — update in .env!", stacklevel=1)
+if not settings.ENCRYPTION_KEY:
+    _warnings.warn("ENCRYPTION_KEY is empty — contact data encryption will not work!", stacklevel=1)
