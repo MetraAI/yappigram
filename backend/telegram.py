@@ -192,6 +192,8 @@ async def verify_code(phone: str, code: str, password_2fa: str | None = None) ->
 
     # Save StringSession to DB (no more SQLite files)
     session_str = client.session.save()
+    if not session_str or len(session_str) < 10:
+        raise ValueError("Failed to serialize Telegram session")
     async with async_session() as db:
         result = await db.execute(select(TgAccount).where(TgAccount.phone == phone))
         account = result.scalar_one_or_none()
@@ -976,7 +978,7 @@ async def send_media_group(
     )
     if not isinstance(results, list):
         results = [results]
-    return [r.id for r in results]
+    return [getattr(r, 'id', None) or (r.get('id') if isinstance(r, dict) else 0) for r in results]
 
 
 async def forward_message(
@@ -1069,7 +1071,7 @@ async def get_drafts(account_id: UUID) -> list[dict]:
                     elif hasattr(p, 'chat_id'):
                         peer_id = -p.chat_id
                     elif hasattr(p, 'channel_id'):
-                        peer_id = -1000000000000 - p.channel_id
+                        peer_id = int(f"-100{p.channel_id}")
                 if peer_id:
                     drafts.append({
                         "peer_id": peer_id,

@@ -1090,7 +1090,15 @@ function ChatsContent() {
             setVisibleCount(prev => Math.min(prev + 50, filteredContacts.length));
           }
         }}>
-          {filteredContacts.slice(0, visibleCount).map((c) => (
+          {(() => {
+            const visible = filteredContacts.slice(0, visibleCount);
+            // Ensure selected contact is always visible
+            if (selected && !visible.find(c => c.id === selected.id)) {
+              const sel = filteredContacts.find(c => c.id === selected.id);
+              if (sel) visible.push(sel);
+            }
+            return visible;
+          })().map((c) => (
             <div
               key={c.id}
               onClick={() => { setSelected(c); setShowTags(false); setEditingAlias(false); }}

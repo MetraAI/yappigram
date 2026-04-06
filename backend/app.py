@@ -970,7 +970,8 @@ async def list_contacts(
         cache_key = f"contacts:{_org_id(user)}:{user.id}:{tg_account_id or 'all'}:{archived}:{limit}"
         cached = await cache_get(cache_key)
         if cached:
-            return _json.loads(cached)
+            from fastapi.responses import Response
+            return Response(content=cached, media_type="application/json")
 
     query = select(Contact)
 
