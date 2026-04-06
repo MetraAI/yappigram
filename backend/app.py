@@ -989,15 +989,8 @@ async def list_contacts(
     limit: int = Query(2000, ge=1, le=5000),
     offset: int = Query(0, ge=0),
 ):
-    # Redis cache for common queries (no search, no tag, no assigned_to filter)
-    import json as _json
+    # Redis cache disabled — caused empty contacts for some users
     cache_key = None
-    if not search and not tag and not assigned_to and not status_filter and offset == 0:
-        cache_key = f"contacts:{_org_id(user)}:{user.id}:{tg_account_id or 'all'}:{archived}:{limit}"
-        cached = await cache_get(cache_key)
-        if cached:
-            from fastapi.responses import Response
-            return Response(content=cached, media_type="application/json")
 
     query = select(Contact)
 
