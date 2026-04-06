@@ -202,6 +202,7 @@ function ChatsContent() {
     if (hasContent !== hasText) setHasText(hasContent);
   };
   const [search, setSearch] = useState("");
+  const [visibleCount, setVisibleCount] = useState(50);
   const [editingAlias, setEditingAlias] = useState(false);
   const [aliasValue, setAliasValue] = useState("");
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -832,6 +833,7 @@ function ChatsContent() {
     }
     setSelected(null);
     setMessages([]);
+    setVisibleCount(50);
   };
 
   const showEditHistory = async (contactId: string, messageId: string) => {
@@ -991,7 +993,7 @@ function ChatsContent() {
               <input
                 placeholder="Search chats..."
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => { setSearch(e.target.value); setVisibleCount(50); }}
                 className="w-full bg-surface-card border border-surface-border rounded-xl pl-10 pr-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 focus:shadow-[0_0_12px_rgba(14,165,233,0.08)] transition-all placeholder:text-slate-600"
               />
             </div>
@@ -1064,8 +1066,13 @@ function ChatsContent() {
             )}
           </div>
         </div>
-        <div className="flex-1 overflow-auto">
-          {filteredContacts.slice(0, search ? 500 : 100).map((c) => (
+        <div className="flex-1 overflow-auto" onScroll={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
+            setVisibleCount(prev => Math.min(prev + 50, filteredContacts.length));
+          }
+        }}>
+          {filteredContacts.slice(0, visibleCount).map((c) => (
             <div
               key={c.id}
               onClick={() => { setSelected(c); setShowTags(false); setEditingAlias(false); }}
@@ -1166,13 +1173,11 @@ function ChatsContent() {
               )}
             </div>
           ))}
-          {filteredContacts.length > (search ? 500 : 100) && (
-            <button
-              onClick={() => { /* scroll triggers more loading via intersection observer in future */ }}
-              className="w-full py-2 text-xs text-slate-500 text-center"
-            >
-              Показано {search ? 500 : 100} из {filteredContacts.length} чатов. Используйте поиск для остальных.
-            </button>
+          {visibleCount < filteredContacts.length && (
+            <div className="w-full py-3 flex items-center justify-center gap-2 text-xs text-slate-500">
+              <div className="w-3 h-3 border border-slate-600 border-t-slate-400 rounded-full animate-spin" />
+              Листайте вниз...
+            </div>
           )}
           {filteredContacts.length === 0 && (
             <div className="flex flex-col items-center justify-center mt-16 text-slate-500">
