@@ -259,7 +259,24 @@ function ChatsContent() {
 
   // Templates
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [drafts, setDrafts] = useState<Map<string, string>>(new Map()); // contact_id -> draft text
+  const [drafts, setDrafts] = useState<Map<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem("crm_drafts");
+      return saved ? new Map(Object.entries(JSON.parse(saved))) : new Map();
+    } catch { return new Map(); }
+  });
+  const saveDraft = (contactId: string, text: string) => {
+    setDrafts(prev => {
+      const next = new Map(prev);
+      if (text.trim()) {
+        next.set(contactId, text.trim());
+      } else {
+        next.delete(contactId);
+      }
+      try { localStorage.setItem("crm_drafts", JSON.stringify(Object.fromEntries(next))); } catch {}
+      return next;
+    });
+  };
   const [showTemplates, setShowTemplates] = useState(false);
   const [tplCategory, setTplCategory] = useState<string | null>(null);
 
@@ -381,15 +398,21 @@ function ChatsContent() {
   useEffect(() => {
     const acctId = filterAccountId || undefined;
     fetchTemplates(acctId).then(setTemplates).catch(console.error);
-    // Fetch drafts
-    api(`/api/drafts${acctId ? `?tg_account_id=${acctId}` : ""}`).then((d: any[]) => {
-      const m = new Map<string, string>();
-      for (const draft of d) {
-        if (draft.contact_id && draft.text) m.set(draft.contact_id, draft.text);
-      }
-      setDrafts(m);
-    }).catch(() => {});
   }, [filterAccountId]);
+
+  // Save draft on page unload
+  useEffect(() => {
+    const save = () => {
+      if (selected && textRef.current.trim()) {
+        saveDraft(selected.id, textRef.current);
+      }
+    };
+    window.addEventListener("beforeunload", save);
+    document.addEventListener("visibilitychange", () => { if (document.hidden) save(); });
+    return () => window.removeEventListener("beforeunload", save);
+  }, [selected]);
+
+  // Drafts are initialized from localStorage in useState above
 
   // Re-fetch contacts when account filter changes (both normal + archived)
   useEffect(() => {
@@ -679,11 +702,12 @@ function ChatsContent() {
       }
     }
 
-    // Clear input immediately for snappy UX
+    // Clear input and draft immediately for snappy UX
     const savedText = content;
     const savedReply = replyTo;
     const savedFiles = [...pendingFiles];
     setText("");
+    if (selected) saveDraft(selected.id, "");
     setReplyTo(null);
     setPendingFiles([]);
     setShowEmoji(false);
@@ -988,13 +1012,13 @@ function ChatsContent() {
       return true;
     })
     .sort((a, b) => {
-      const ap = pinned.has(a.id) ? 1 : 0;
-      const bp = pinned.has(b.id) ? 1 : 0;
+      const ap = pinned.has(a.id) ? 2 : drafts.has(a.id) ? 1 : 0;
+      const bp = pinned.has(b.id) ? 2 : drafts.has(b.id) ? 1 : 0;
       if (ap !== bp) return bp - ap;
       const aDate = a.last_message_at || a.created_at || "";
       const bDate = b.last_message_at || b.created_at || "";
       return bDate.localeCompare(aDate);
-    }), [contacts, showArchived, search, filterTag, pinned]);
+    }), [contacts, showArchived, search, filterTag, pinned, drafts]);
 
   const isGroup = selected?.chat_type === "group" || selected?.chat_type === "channel" || selected?.chat_type === "supergroup";
 
@@ -1101,7 +1125,11 @@ function ChatsContent() {
           })().map((c) => (
             <div
               key={c.id}
-              onClick={() => { setSelected(c); setShowTags(false); setEditingAlias(false); }}
+              onClick={() => {
+                // Save current draft before switching
+                if (selected) saveDraft(selected.id, textRef.current);
+                setSelected(c); setShowTags(false); setEditingAlias(false);
+              }}
               className={`px-4 py-3.5 cursor-pointer border-b border-surface-border/50 transition-all duration-150 ${
                 selected?.id === c.id
                   ? "bg-brand/5 border-l-2 border-l-brand"
