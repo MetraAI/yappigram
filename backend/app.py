@@ -3031,7 +3031,6 @@ async def get_contact_avatar(
 
     # Check cache (refresh every 24h)
     if os.path.exists(avatar_path):
-        import time
         age = time.time() - os.path.getmtime(avatar_path)
         if age < 86400:  # 24h cache
             return FileResponse(avatar_path, media_type="image/jpeg")
