@@ -16,3 +16,4 @@ slowapi==0.1.9
 python-multipart==0.0.12
 httpx==0.28.1
 Pillow>=10.0.0
+sentry-sdk[fastapi]==2.18.0

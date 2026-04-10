@@ -289,6 +289,47 @@ def check_rate_limit(request):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests")
     _rate_limits[ip].append(now)
 
+
+# ─── Sentry error monitoring ──────────────────────────────────────
+# Initialized BEFORE FastAPI() so the SDK's ASGI middleware picks up
+# every request. Only fires if SENTRY_DSN is set in env — safe to leave
+# the code in dev where there's no DSN.
+_sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+        from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+            # Capture 10% of transactions for performance monitoring.
+            # Full tracing on a Telegram CRM with hot WS traffic is
+            # expensive and Sentry free tier has low quotas.
+            traces_sample_rate=0.1,
+            # Capture 100% of errors, obviously.
+            sample_rate=1.0,
+            # Send PII (user email, IP) so we can tell who hit the error.
+            # CRM is internal, not public-facing — this is fine.
+            send_default_pii=True,
+            integrations=[
+                StarletteIntegration(transaction_style="endpoint"),
+                FastApiIntegration(transaction_style="endpoint"),
+                SqlalchemyIntegration(),
+            ],
+            # Drop noisy integrations that flood Sentry with non-issues.
+            # Telethon disconnects are normal operation, not errors.
+            ignore_errors=[
+                "telethon.errors.rpcerrorlist.FloodWaitError",
+            ],
+        )
+        print(f"[SENTRY] Initialized (env={os.environ.get('SENTRY_ENVIRONMENT', 'production')})", flush=True)
+    except Exception as _sentry_err:
+        print(f"[SENTRY] Init failed: {_sentry_err}", flush=True)
+
+
 app = FastAPI(title="YappiGram", version="1.0.0")
 
 app.add_middleware(
