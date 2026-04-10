@@ -143,8 +143,6 @@ export default function LoginPage() {
           const base = window.location.pathname.split("/login")[0] || "";
           window.location.href = base + "/chats/";
           return;
-
-          Legacy re-SSO disabled — see comment above. */
         }
       }
 
