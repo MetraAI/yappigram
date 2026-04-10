@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   isTelegramWebApp, tgAuth, tgSelectWorkspace, ssoAuth,
-  getTgWebApp, getTokens, saveTokens, clearTokens, disconnectWS,
+  getTgWebApp, getTokens, saveTokens, clearAllCrmStorage, disconnectWS,
   api,
   type TgWorkspace,
 } from "@/lib";
@@ -52,14 +52,16 @@ async function isLocalCrmTokenOwnedByCurrentPfUser(): Promise<boolean | null> {
   let staff: any;
   try {
     staff = await api("/api/staff/me");
-  } catch {
-    // 401/network error → token is bad anyway, force re-SSO
-    return false;
+  } catch (err: any) {
+    // 401 = CRM token is bad → definitely force re-SSO.
+    // Network error / timeout = CRM backend might be down but the local
+    // token could be perfectly valid. Returning null here lets the caller
+    // proceed with the existing CRM session rather than locking the user
+    // out when the backend has a brief hiccup.
+    if (err?.status === 401 || err?.message?.includes("401")) return false;
+    return null;
   }
   const staffPfUserId = staff?.postforge_user_id ? String(staff.postforge_user_id) : null;
-  // Backend hasn't been redeployed yet (older response without postforge_user_id)
-  // — fall through to "unknown" so we don't lock everyone out during a partial
-  // rollout. Once both sides ship, this becomes a hard equality check.
   if (!staffPfUserId) return null;
   return staffPfUserId === pfUserId;
 }
@@ -84,7 +86,7 @@ export default function LoginPage() {
       if (accessToken && refreshToken) {
         // Clear old session completely before applying new SSO tokens
         disconnectWS();
-        clearTokens();
+        clearAllCrmStorage();
         const role = hashParams?.get("role") || params.get("role") || "operator";
         saveTokens({ access_token: accessToken, refresh_token: refreshToken, role });
         // Mark as coming from PostForge so AppShell shows "back to dashboard" instead of "logout"
@@ -104,9 +106,10 @@ export default function LoginPage() {
         const ownership = await isLocalCrmTokenOwnedByCurrentPfUser();
         if (cancelled) return;
         if (ownership === false) {
-          // Stale token detected — clear and re-SSO with the current PostForge token
+          // CONFIRMED mismatch — CRM token belongs to a different PostForge user.
+          // This is the critical security path: nuclear cleanup + force re-SSO.
           const pfToken = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
-          clearTokens();
+          clearAllCrmStorage();
           disconnectWS();
           if (pfToken) {
             const ok = await ssoAuth(pfToken);
@@ -122,13 +125,19 @@ export default function LoginPage() {
           }
           return;
         }
-        // ownership === true (verified) OR null (no PF token in storage / older backend) — proceed.
+        // ownership === true: verified, safe to proceed.
+        // ownership === null: cannot verify (no PF token / network error / backend
+        //   missing postforge_user_id). We let the user through because:
+        //   1) Backend enforces org isolation on EVERY API call via _org_accounts_subq()
+        //   2) Blocking here would lock users out during CRM backend hiccups
+        //   3) sessionStorage is now cleaned on every logout, so stale account
+        //      selection can't leak — the remaining risk is acceptable.
 
         if (!isInIframe) {
           // Direct access: PostForge user may have changed — re-SSO using PostForge token
           const pfToken = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
           if (pfToken) {
-            clearTokens();
+            clearAllCrmStorage();
             disconnectWS();
             const ok = await ssoAuth(pfToken);
             if (cancelled) return;

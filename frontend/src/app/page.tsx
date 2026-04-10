@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getTokens, clearTokens, disconnectWS } from "@/lib";
+import { getTokens, clearAllCrmStorage, disconnectWS } from "@/lib";
 
 export default function Home() {
   const router = useRouter();
@@ -14,7 +14,7 @@ export default function Home() {
       const pfToken = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
       if (pfToken) {
         // Clear stale CRM tokens — login page will do fresh SSO
-        clearTokens();
+        clearAllCrmStorage();
         disconnectWS();
       }
     }

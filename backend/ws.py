@@ -110,13 +110,18 @@ class WSManager:
             await self._local_broadcast_to_org(org_id, event)
 
     async def broadcast_to_admins(self, event: dict, org_id: str | None = None):
-        if org_id is not None:
-            await self.broadcast_to_org(org_id, event)
-        else:
-            if self._redis:
-                await self._redis.publish("crm:ws:broadcast", json.dumps(event, default=str))
-            else:
-                await self._local_broadcast_all(event)
+        # SECURITY: org_id is REQUIRED. Broadcasting without org scoping would
+        # send private Telegram messages to every connected user across all orgs.
+        # The `org_id is None` fallback existed for legacy reasons but is a data
+        # leak risk — one missed caller = full cross-org exposure. Log and drop.
+        if org_id is None:
+            import logging
+            logging.getLogger(__name__).warning(
+                "broadcast_to_admins called WITHOUT org_id — dropping event to prevent cross-org leak. "
+                f"Event type: {event.get('type', 'unknown')}"
+            )
+            return
+        await self.broadcast_to_org(org_id, event)
 
 
 ws_manager = WSManager()

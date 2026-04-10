@@ -1,6 +1,8 @@
 """YappiGram — Main FastAPI application with all routes."""
 
 import asyncio
+import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -246,6 +248,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Cache-Control headers are set in nginx (nginx.conf and nginx.prod.conf)
+# on ALL /api/ responses: `Cache-Control: no-store, no-cache, must-revalidate, private`.
+# We intentionally do NOT add a Python middleware for this because
+# BaseHTTPMiddleware buffers FileResponse (avatars) into memory.
+# Nginx is always in front in production, so headers are enforced there.
+
 # Redis cache for hot paths
 _redis_cache = None
 
@@ -402,6 +411,29 @@ SuperAdmin = Annotated[Staff, Depends(require_role("super_admin"))]
 def _org_id(user: Staff) -> str | None:
     """Get the effective org_id for data scoping."""
     return user.postforge_org_id
+
+
+def _audit(
+    db,
+    user: Staff,
+    action: str,
+    *,
+    target_id: str | None = None,
+    target_type: str | None = None,
+    target_contact_id=None,
+    metadata: dict | None = None,
+    ip: str | None = None,
+):
+    """Append an entry to the audit trail. Fire-and-forget (caller commits)."""
+    db.add(AuditLog(
+        staff_id=user.id,
+        action=action,
+        target_contact_id=target_contact_id,
+        target_id=target_id,
+        target_type=target_type,
+        metadata_json=metadata,
+        ip_address=ip,
+    ))
 
 
 def _org_accounts_subq(user: Staff):
@@ -904,13 +936,17 @@ async def sso_auth(req: SsoAuthRequest, request: Request, db: DB):
     else:
         crm_role = "operator"
 
-    # Find existing Staff by (postforge_user_id, postforge_org_id) pair
+    # Find existing Staff by (postforge_user_id, postforge_org_id) pair.
+    # FOR UPDATE prevents a race where two concurrent SSO requests both see
+    # "no Staff exists" and both INSERT a duplicate — which would create two
+    # Staff records with the same synthetic tg_user_id and cause one user to
+    # see another's Telegram chats.
     result = await db.execute(
         select(Staff).where(
             Staff.postforge_user_id == pf_user_id,
             Staff.postforge_org_id == effective_org_id,
             Staff.is_active.is_(True),
-        )
+        ).with_for_update()
     )
     user = result.scalar_one_or_none()
 
@@ -959,6 +995,9 @@ async def sso_auth(req: SsoAuthRequest, request: Request, db: DB):
             await db.commit()
 
     print(f"[SSO] user={pf_user_id} org={effective_org_id} role={crm_role} staff={user.id} name={user.name}", flush=True)
+
+    _audit(db, user, "sso_login", metadata={"pf_user_id": pf_user_id, "role": crm_role})
+    await db.commit()
 
     return TokenResponse(
         access_token=create_token(user.id, "access"),
@@ -1022,6 +1061,8 @@ async def tg_verify(req: TgVerifyRequest, user: CurrentUser, db: DB):
     tg_acc = result.scalar_one_or_none()
     if tg_acc:
         tg_acc.org_id = _org_id(user)
+        _audit(db, user, "tg_connect", target_id=str(account.id), target_type="tg_account",
+               metadata={"phone": account.phone[:4] + "****"})  # Mask phone in logs
         await db.commit()
 
     # Charge the user for the CRM account (45 coins first month).
@@ -1098,6 +1139,8 @@ async def tg_disconnect(account_id: UUID, user: CurrentUser, db: DB):
     # Unlink from staff
     await db.execute(sa_delete(StaffTgAccount).where(StaffTgAccount.tg_account_id == account_id))
 
+    _audit(db, user, "tg_disconnect", target_id=str(account_id), target_type="tg_account",
+           metadata={"phone": account.phone[:4] + "****" if account.phone else None})
     await db.commit()
     try:
         await disconnect_account(account_id)
@@ -1423,6 +1466,17 @@ async def get_pinned(user: Annotated[Staff, Depends(get_current_user)], db: DB):
 @app.post("/api/pinned/{contact_id}", status_code=204)
 async def pin_chat(contact_id: UUID, user: Annotated[Staff, Depends(get_current_user)], db: DB):
     org = _org_id(user)
+    # Verify the contact belongs to user's org before pinning.
+    # Without this, any user could pin contacts from other orgs by guessing UUIDs.
+    contact_check = await db.execute(
+        select(Contact.id).where(
+            Contact.id == contact_id,
+            Contact.tg_account_id.in_(_org_accounts_subq(user)),
+        )
+    )
+    if not contact_check.scalar_one_or_none():
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
     existing = await db.execute(
         select(PinnedChat).where(PinnedChat.org_id == org, PinnedChat.contact_id == contact_id)
     )
@@ -1436,6 +1490,16 @@ async def pin_chat(contact_id: UUID, user: Annotated[Staff, Depends(get_current_
 async def unpin_chat(contact_id: UUID, user: Annotated[Staff, Depends(get_current_user)], db: DB):
     from sqlalchemy import delete as sa_delete
     org = _org_id(user)
+    # Only delete if the contact belongs to user's org (defense in depth).
+    contact_check = await db.execute(
+        select(Contact.id).where(
+            Contact.id == contact_id,
+            Contact.tg_account_id.in_(_org_accounts_subq(user)),
+        )
+    )
+    if not contact_check.scalar_one_or_none():
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
     await db.execute(
         sa_delete(PinnedChat).where(PinnedChat.org_id == org, PinnedChat.contact_id == contact_id)
     )
@@ -2501,10 +2565,31 @@ async def get_staff_accounts(staff_id: UUID, user: AdminUser, db: DB):
 @app.put("/api/staff/{staff_id}/accounts")
 async def set_staff_accounts(staff_id: UUID, account_ids: list[UUID], user: AdminUser, db: DB):
     """Set TG accounts for a staff member (replace all)."""
+    org = _org_id(user)
+    # Deduplicate to prevent false count mismatches and IntegrityError on insert.
+    account_ids = list(set(account_ids))
+
     # Verify staff exists in same org
-    result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.postforge_org_id == _org_id(user)))
+    result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.postforge_org_id == org))
     if not result.scalar_one_or_none():
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    # CRITICAL: verify ALL accounts belong to the SAME org.
+    # Without this check an admin from Org A could assign Org B's TG accounts
+    # to their own staff and gain access to Org B's chats — a full data breach.
+    if account_ids:
+        from sqlalchemy import func as sa_func
+        valid_count = (await db.execute(
+            select(sa_func.count()).select_from(TgAccount).where(
+                TgAccount.id.in_(account_ids),
+                TgAccount.org_id == org,
+            )
+        )).scalar() or 0
+        if valid_count != len(account_ids):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "One or more accounts do not belong to your organization",
+            )
 
     # Delete existing assignments
     from sqlalchemy import delete
@@ -2514,6 +2599,8 @@ async def set_staff_accounts(staff_id: UUID, account_ids: list[UUID], user: Admi
     for acc_id in account_ids:
         db.add(StaffTgAccount(staff_id=staff_id, tg_account_id=acc_id))
 
+    _audit(db, user, "assign_accounts", target_id=str(staff_id), target_type="staff",
+           metadata={"account_ids": [str(a) for a in account_ids]})
     await db.commit()
     return {"status": "ok", "account_ids": [str(a) for a in account_ids]}
 
@@ -2527,6 +2614,8 @@ async def deactivate_staff(staff_id: UUID, user: AdminUser, db: DB):
     if target.role == "super_admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot deactivate super admin")
     target.is_active = False
+    _audit(db, user, "deactivate_staff", target_id=str(staff_id), target_type="staff",
+           metadata={"name": target.name, "role": target.role})
     await db.commit()
     return {"status": "deactivated"}
 
@@ -2864,33 +2953,77 @@ async def unarchive_contact(contact_id: UUID, user: CurrentUser, db: DB):
 # Avatars (proxy Telegram profile photos)
 # ============================================================
 
-@app.get("/api/contacts/{contact_id}/avatar")
-async def get_contact_avatar(contact_id: UUID, db: DB, token: str = Query("")):
-    """Download and return the Telegram avatar for a contact."""
-    from fastapi.responses import FileResponse
-    # Verify token (passed as query param since <img src> can't send headers)
-    if not token:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-    payload = decode_token(token)
-    if payload.get("type") != "access":
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+@app.get("/api/contacts/{contact_id}/avatar-url")
+async def get_avatar_signed_url(contact_id: UUID, user: Annotated[Staff, Depends(get_current_user)], db: DB):
+    """Return a signed, time-limited URL for a contact's avatar.
 
+    Frontend calls this once and uses the signed URL in <img src>.
+    The signed URL doesn't contain the JWT — it uses an HMAC signature
+    with a 1-hour expiry, so even if leaked it's short-lived and
+    can't be used for anything except viewing this specific avatar.
+    """
     # Verify contact belongs to user's org
-    staff_id = payload.get("sub")
-    staff_result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True)))
-    staff_user = staff_result.scalar_one_or_none()
-    if not staff_user:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-
     result = await db.execute(
-        select(Contact).where(
+        select(Contact.id).where(
             Contact.id == contact_id,
-            Contact.tg_account_id.in_(_org_accounts_subq(staff_user)),
+            Contact.tg_account_id.in_(_org_accounts_subq(user)),
         )
     )
-    contact = result.scalar_one_or_none()
-    if not contact:
+    if not result.scalar_one_or_none():
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    expires = int(time.time()) + 3600  # 1 hour
+    payload = f"{contact_id}:{expires}"
+    sig = hmac.new(settings.JWT_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return {"url": f"/api/contacts/{contact_id}/avatar?expires={expires}&sig={sig}"}
+
+
+@app.get("/api/contacts/{contact_id}/avatar")
+async def get_contact_avatar(
+    contact_id: UUID,
+    db: DB,
+    expires: int = Query(0),
+    sig: str = Query(""),
+    token: str = Query(""),  # Legacy compat — remove after frontend deploys
+):
+    """Serve avatar image. Accepts either HMAC signed URL or legacy JWT token."""
+    from fastapi.responses import FileResponse
+
+    if sig and expires:
+        # Signed URL auth (preferred — no JWT in URL)
+        if time.time() > expires:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Link expired")
+        payload = f"{contact_id}:{expires}"
+        expected = hmac.new(settings.JWT_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expected):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid signature")
+        # Signed URL is valid — we verified contact ownership when generating it.
+        # Look up contact directly (no org check needed, signature is proof of authz).
+        result = await db.execute(select(Contact).where(Contact.id == contact_id))
+        contact = result.scalar_one_or_none()
+        if not contact:
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+    elif token:
+        # Legacy: JWT in query param (backward compat during frontend rollout)
+        payload_jwt = decode_token(token)
+        if payload_jwt.get("type") != "access":
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+        staff_id = payload_jwt.get("sub")
+        staff_result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True)))
+        staff_user = staff_result.scalar_one_or_none()
+        if not staff_user:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+        result = await db.execute(
+            select(Contact).where(
+                Contact.id == contact_id,
+                Contact.tg_account_id.in_(_org_accounts_subq(staff_user)),
+            )
+        )
+        contact = result.scalar_one_or_none()
+        if not contact:
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+    else:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
     avatar_dir = os.path.join(MEDIA_DIR, "avatars")
     os.makedirs(avatar_dir, exist_ok=True)
@@ -3936,34 +4069,146 @@ async def update_crm_settings(
 # WebSocket
 # ============================================================
 
-async def _handle_ws(ws: WebSocket, token: str):
-    """Shared WebSocket handler."""
-    payload = decode_token(token)
-    if payload.get("type") != "access":
+# ============================================================
+# WebSocket ticket-based auth (Slack-style)
+#
+# Why: passing JWT in ws://...?token=<jwt> leaks the token into
+# browser history, nginx access logs, and proxy logs. Any of those
+# is a direct account takeover vector.
+#
+# Pattern: client calls POST /api/ws/ticket with JWT in Authorization
+# header (safe, not logged). Server returns a single-use UUID ticket
+# stored in Redis with 30-second TTL. Client connects to ws://?ticket=<uuid>.
+# Server redeems ticket from Redis (delete-on-read) and proceeds.
+# The real JWT never appears in a URL.
+# ============================================================
+
+import secrets as _secrets
+
+# In-memory fallback if Redis is unavailable. Dict of {ticket: staff_id, org_id, expires}
+_ws_tickets: dict[str, tuple[UUID, str | None, float]] = {}
+_WS_TICKET_TTL = 30  # seconds
+
+
+@app.post("/api/ws/ticket")
+async def create_ws_ticket(user: Annotated[Staff, Depends(get_current_user)]):
+    """Issue a single-use, short-lived ticket for WebSocket connection.
+
+    The ticket replaces the JWT in the WS URL, keeping the real token out of
+    browser history and server logs (Slack uses the same pattern).
+    """
+    ticket = _secrets.token_urlsafe(32)
+    expires = time.time() + _WS_TICKET_TTL
+
+    r = await _get_redis()
+    if r:
+        try:
+            await r.set(f"ws_ticket:{ticket}", f"{user.id}:{_org_id(user) or ''}", ex=_WS_TICKET_TTL)
+        except Exception:
+            # Redis down — use in-memory fallback
+            _ws_tickets[ticket] = (user.id, _org_id(user), expires)
+    else:
+        _ws_tickets[ticket] = (user.id, _org_id(user), expires)
+
+    return {"ticket": ticket}
+
+
+async def _redeem_ws_ticket(ticket: str) -> tuple[UUID, str | None] | None:
+    """Redeem a WS ticket (single-use, delete on read). Returns (staff_id, org_id) or None."""
+    r = await _get_redis()
+    if r:
+        try:
+            # GETDEL is atomic: reads and deletes in one command (Redis 6.2+).
+            # Prevents two concurrent WS connections from both redeeming the same ticket.
+            val = await r.getdel(f"ws_ticket:{ticket}")
+            if val:
+                raw = val if isinstance(val, str) else val.decode()
+                parts = raw.split(":", 1)
+                org_id = parts[1] if (len(parts) > 1 and parts[1]) else None
+                return UUID(parts[0]), org_id
+        except Exception:
+            pass
+
+    # In-memory fallback
+    entry = _ws_tickets.pop(ticket, None)
+    if entry:
+        staff_id, org_id, expires = entry
+        if time.time() < expires:
+            return staff_id, org_id
+    return None
+
+
+async def _handle_ws(ws: WebSocket, ticket: str | None = None, token: str | None = None):
+    """Shared WebSocket handler. Accepts ticket (preferred) or legacy token."""
+    staff_id: UUID | None = None
+    org_id: str | None = None
+
+    if ticket:
+        # Ticket-based auth (secure — JWT never in URL)
+        result = await _redeem_ws_ticket(ticket)
+        if not result:
+            await ws.close(code=4001)
+            return
+        staff_id, org_id = result
+    elif token:
+        # Legacy token-based auth (kept for backward compat during rollout)
+        payload = decode_token(token)
+        if payload.get("type") != "access":
+            await ws.close(code=4001)
+            return
+        staff_id = UUID(payload["sub"])
+        # Need to look up org_id
+        from models import async_session as get_session
+        async with get_session() as db:
+            result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True)))
+            user = result.scalar_one_or_none()
+            if not user:
+                await ws.close(code=4003)
+                return
+            org_id = user.postforge_org_id
+    else:
         await ws.close(code=4001)
         return
 
-    staff_id = UUID(payload["sub"])
+    # For ticket-based auth, verify user still exists and is active
+    if ticket:
+        from models import async_session as get_session
+        async with get_session() as db:
+            result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True)))
+            user = result.scalar_one_or_none()
+            if not user:
+                await ws.close(code=4003)
+                return
 
-    # Verify user exists and is active
-    from models import async_session as get_session
-    async with get_session() as db:
-        result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True)))
-        user = result.scalar_one_or_none()
-        if not user:
-            await ws.close(code=4003)
-            return
+    await ws_manager.connect(staff_id, ws, org_id=org_id)
 
-    await ws_manager.connect(staff_id, ws, org_id=user.postforge_org_id)
+    # Periodic token/session revalidation (Fix #3 from audit).
+    # Every 5 minutes, verify the user is still active. If deactivated
+    # (e.g., admin revoked access), close the WS instead of letting it
+    # receive messages indefinitely on a stale session.
+    _last_revalidation = time.time()
+
     try:
         while True:
             try:
                 data = await asyncio.wait_for(ws.receive_text(), timeout=45)
-                # Respond to ping with pong
                 if data == "ping":
                     await ws.send_text("pong")
+
+                # Revalidate every 5 minutes
+                now = time.time()
+                if now - _last_revalidation > 300:
+                    _last_revalidation = now
+                    from models import async_session as get_session
+                    async with get_session() as db:
+                        still_active = (await db.execute(
+                            select(Staff.is_active).where(Staff.id == staff_id)
+                        )).scalar()
+                        if not still_active:
+                            await ws.close(code=4003, reason="Session revoked")
+                            return
+
             except asyncio.TimeoutError:
-                # Send keepalive ping if no data received
                 try:
                     await ws.send_text('{"type":"ping"}')
                 except Exception:
@@ -3975,13 +4220,14 @@ async def _handle_ws(ws: WebSocket, token: str):
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
-    await _handle_ws(ws, token)
+async def websocket_endpoint(ws: WebSocket, ticket: str = Query(None), token: str = Query(None)):
+    # ws.accept() is called inside ws_manager.connect() — do NOT call it here.
+    await _handle_ws(ws, ticket=ticket, token=token)
 
 
 @app.websocket("/crm/ws")
-async def websocket_endpoint_crm(ws: WebSocket, token: str = Query(...)):
-    await _handle_ws(ws, token)
+async def websocket_endpoint_crm(ws: WebSocket, ticket: str = Query(None), token: str = Query(None)):
+    await _handle_ws(ws, ticket=ticket, token=token)
 
 
 # ============================================================

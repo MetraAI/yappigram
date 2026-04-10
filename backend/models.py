@@ -227,13 +227,22 @@ class PinnedChat(Base):
 
 
 class AuditLog(Base):
-    """Logs sensitive actions like revealing real client data."""
+    """Append-only audit trail for sensitive operations.
+
+    SOC2 requirement: admins MUST NOT be able to delete audit logs.
+    Application-level enforcement: no DELETE endpoint exists for this table.
+    """
     __tablename__ = "audit_log"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     staff_id = Column(UUID(as_uuid=True), ForeignKey("staff.id"), nullable=False)
-    action = Column(String, nullable=False)  # reveal_data | block_contact | ...
+    action = Column(String, nullable=False)
+    # Generic target — use contact_id for backward compat, target_id for new ops
     target_contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=True)
+    target_id = Column(String, nullable=True)     # Generic target (account UUID, staff UUID, etc)
+    target_type = Column(String, nullable=True)    # "tg_account", "staff", "contact", etc
+    metadata_json = Column(JSON, nullable=True)    # Old/new values, extra context
+    ip_address = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useMemo } from "react";
-import { api, clearTokens, disconnectWS, getTokens, isTelegramWebApp, getTgWebApp } from "./lib";
+import { api, clearTokens, clearAllCrmStorage, disconnectWS, getTokens, isTelegramWebApp, getTgWebApp } from "./lib";
 
 // ============================================================
 // SVG Icons
@@ -177,7 +177,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const logout = () => {
     disconnectWS();
-    clearTokens();
+    clearAllCrmStorage();
     if (isTg) {
       getTgWebApp()?.close();
     } else {

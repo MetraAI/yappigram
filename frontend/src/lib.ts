@@ -17,7 +17,7 @@ export function getTokens(): TokenPair | null {
   try {
     return JSON.parse(raw);
   } catch {
-    clearTokens();
+    clearAllCrmStorage();
     return null;
   }
 }
@@ -28,6 +28,32 @@ export function saveTokens(tokens: TokenPair) {
 
 export function clearTokens() {
   localStorage.removeItem("tokens");
+}
+
+/**
+ * Nuclear cleanup: wipe ALL CRM-related state from browser storage.
+ *
+ * Why this exists:
+ * - clearTokens() only removes JWT tokens from localStorage.
+ * - sessionStorage keys (crm_selected_account, crm_is_embedded, crm_is_org_team)
+ *   and localStorage keys (crm_drafts, crm_timezone) survive across logouts.
+ * - If User A logs out and User B logs in on the same browser, B inherits A's
+ *   selected Telegram account and sees A's chats. THIS IS A DATA BREACH.
+ *
+ * Call this on EVERY logout path and EVERY SSO re-auth that detects a user switch.
+ */
+export function clearAllCrmStorage() {
+  // JWT tokens
+  localStorage.removeItem("tokens");
+
+  // User-specific data that MUST NOT leak between sessions
+  localStorage.removeItem("crm_drafts");
+  localStorage.removeItem("crm_timezone");
+
+  // Session-scoped state
+  try { sessionStorage.removeItem("crm_selected_account"); } catch {}
+  try { sessionStorage.removeItem("crm_is_embedded"); } catch {}
+  try { sessionStorage.removeItem("crm_is_org_team"); } catch {}
 }
 
 export function getRole(): string | null {
@@ -45,7 +71,7 @@ async function refreshTokens(): Promise<string | null> {
   });
 
   if (!res.ok) {
-    clearTokens();
+    clearAllCrmStorage();
     return null;
   }
 
@@ -119,12 +145,34 @@ export async function connectWS() {
 
   if (!tokens?.access_token) return;
 
-  // Always use current origin for WS (not API URL which may be /crm-api proxy)
+  // Obtain a single-use WS ticket (Slack pattern). The JWT never appears in
+  // the WS URL — it stays in the Authorization header of this fetch call.
+  // The ticket is valid for 30 seconds and redeemed on connect.
+  let wsParam: string;
+  try {
+    const res = await fetch(`${API}/api/ws/ticket`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${tokens.access_token}`,
+      },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      wsParam = `ticket=${data.ticket}`;
+    } else {
+      // Backend doesn't support tickets yet — fallback to legacy token-in-URL
+      wsParam = `token=${tokens.access_token}`;
+    }
+  } catch {
+    // Network error — fallback
+    wsParam = `token=${tokens.access_token}`;
+  }
+
   const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsBase = `${wsProto}//${window.location.host}`;
-  // Only use /crm prefix when embedded under metra-ai.org/crm/, not on subdomain
   const pathBase = window.location.pathname.match(/^\/(crm)\b/)?.[0] || "";
-  _ws = new WebSocket(`${wsBase}${pathBase}/ws?token=${tokens.access_token}`);
+  _ws = new WebSocket(`${wsBase}${pathBase}/ws?${wsParam}`);
 
   let _pingInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -550,7 +598,40 @@ export async function unarchiveContact(contactId: string) {
 // Avatars
 // ============================================================
 
+// Signed avatar URL cache — avoids re-fetching on every render.
+// Structure: contactId → { url: signed URL, expires: timestamp }
+const _avatarCache: Map<string, { url: string; expires: number }> = new Map();
+const _avatarFetching: Set<string> = new Set();
+
+/**
+ * Get an avatar URL for a contact. Returns immediately (sync) so it works
+ * in <img src={}> JSX. On first call returns a legacy URL, then fetches
+ * a signed URL in the background. On subsequent calls returns the cached
+ * signed URL (valid ~50 min). This way the JWT never appears in a URL
+ * after the first fetch completes.
+ */
 export function avatarUrl(contactId: string): string {
+  // Return cached signed URL if valid
+  const cached = _avatarCache.get(contactId);
+  if (cached && cached.expires > Date.now()) return cached.url;
+
+  // Fire async fetch for signed URL (non-blocking)
+  if (!_avatarFetching.has(contactId)) {
+    _avatarFetching.add(contactId);
+    api(`/api/contacts/${contactId}/avatar-url`)
+      .then((data) => {
+        if (data?.url) {
+          _avatarCache.set(contactId, {
+            url: `${API}${data.url}`,
+            expires: Date.now() + 50 * 60 * 1000,
+          });
+        }
+      })
+      .catch(() => { /* endpoint not available — stay on legacy */ })
+      .finally(() => _avatarFetching.delete(contactId));
+  }
+
+  // Sync fallback: legacy token-in-URL (used until signed URL arrives)
   const tokens = getTokens();
   return `${API}/api/contacts/${contactId}/avatar?token=${tokens?.access_token || ""}`;
 }
