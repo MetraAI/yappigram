@@ -178,7 +178,7 @@ function TelegramSection() {
                 {billing.next_charge_at && (
                   <span>Следующая оплата: {new Date(billing.next_charge_at).toLocaleDateString("ru-RU")}</span>
                 )}
-                <span>{billingInfo?.cost_per_month || "45"} коинов/мес</span>
+                <span>{Math.round(Number(billingInfo?.cost_per_month || 45))} коинов/мес</span>
               </div>
             )}
             {acc.is_active && (
@@ -202,7 +202,7 @@ function TelegramSection() {
           <>
             {/* Billing cost notice */}
             <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-200/80">
-              <p className="font-medium mb-1">Стоимость: {billingInfo?.cost_per_month || "45"} Metra Coins / месяц</p>
+              <p className="font-medium mb-1">Стоимость: {Math.round(Number(billingInfo?.cost_per_month || 45))} Metra Coins / месяц</p>
               <p className="text-amber-200/60">
                 {billingInfo?.billing_enabled
                   ? `Ваш баланс: ${billingInfo?.balance || "0"} коинов`

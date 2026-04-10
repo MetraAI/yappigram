@@ -769,22 +769,36 @@ function ChatsContent() {
 
   // Drafts are initialized from localStorage in useState above
 
-  // Re-fetch contacts when account filter changes (both normal + archived).
-  // Guarded by AbortController to prevent stale state on rapid switches.
-  useEffect(() => {
+  // Re-fetch contacts when account filter changes OR page becomes visible.
+  // Next.js App Router may preserve state between navigations (settings→chats),
+  // so we also listen for visibilitychange to catch returning to the page.
+  const refetchContacts = useCallback(() => {
     const acctId = filterAccountId || undefined;
-    const ctrl = new AbortController();
-    const sig = ctrl.signal;
-
     Promise.all([
       fetchContacts(undefined, acctId, false),
       fetchContacts(undefined, acctId, true),
     ]).then(([normal, archived]) => {
-      if (!sig.aborted) setContacts([...normal, ...archived]);
+      setContacts([...normal, ...archived]);
     }).catch(() => {});
-
-    return () => ctrl.abort();
   }, [filterAccountId]);
+
+  useEffect(() => {
+    refetchContacts();
+  }, [refetchContacts]);
+
+  // Re-fetch when navigating back to /chats (tab switch, Next.js navigation)
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden) refetchContacts();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    // Also refetch on window focus (catches Alt+Tab, clicking back to window)
+    window.addEventListener("focus", refetchContacts);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", refetchContacts);
+    };
+  }, [refetchContacts]);
 
   useEffect(() => {
     connectWS();
