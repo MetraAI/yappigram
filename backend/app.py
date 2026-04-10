@@ -243,6 +243,9 @@ def check_tg_send_limit(tg_account_id: str, peer_id: int) -> None:
     Raises 429 Too Many Requests if the caller is sending faster than
     our safe-zone limits. Users should see this as "Подождите пару
     секунд" in the UI rather than as a TG account ban.
+
+    For automated broadcast workers, use `await wait_tg_send_slot()`
+    instead — it sleeps until a slot frees up instead of raising.
     """
     now = time.time()
     acct_key = str(tg_account_id)
@@ -268,6 +271,44 @@ def check_tg_send_limit(tg_account_id: str, peer_id: int) -> None:
 
     peer_hits.append(now)
     acct_hits.append(now)
+
+
+async def wait_tg_send_slot(tg_account_id: str, peer_id: int) -> None:
+    """
+    Async version of check_tg_send_limit for broadcast workers.
+
+    Instead of raising 429, this sleeps until a slot frees up. Used by
+    the broadcast executor so a long recipient list naturally throttles
+    itself below TG's flood thresholds without failing partway through.
+    """
+    import asyncio as _asyncio
+
+    while True:
+        now = time.time()
+        acct_key = str(tg_account_id)
+        peer_key = (str(tg_account_id), peer_id)
+
+        peer_hits = _tg_send_limits_peer[peer_key]
+        peer_hits[:] = [t for t in peer_hits if now - t < TG_PEER_WINDOW]
+        acct_hits = _tg_send_limits_account[acct_key]
+        acct_hits[:] = [t for t in acct_hits if now - t < TG_ACCT_WINDOW]
+
+        # Calculate how long to sleep before the oldest hit expires
+        peer_wait = 0.0
+        if len(peer_hits) >= TG_PEER_MAX:
+            peer_wait = TG_PEER_WINDOW - (now - peer_hits[0]) + 0.1
+
+        acct_wait = 0.0
+        if len(acct_hits) >= TG_ACCT_MAX:
+            acct_wait = TG_ACCT_WINDOW - (now - acct_hits[0]) + 0.1
+
+        wait = max(peer_wait, acct_wait)
+        if wait <= 0:
+            peer_hits.append(now)
+            acct_hits.append(now)
+            return
+
+        await _asyncio.sleep(wait)
 
 
 def _get_real_ip(request) -> str:
@@ -3562,6 +3603,11 @@ async def _run_broadcast(broadcast_id: UUID):
                 continue
 
             try:
+                # Throttle broadcast sends to stay below Telegram flood
+                # thresholds. Unlike manual send endpoints (which raise
+                # 429), broadcasts sleep until a slot frees up.
+                await wait_tg_send_slot(str(bc.tg_account_id), contact.real_tg_id)
+
                 file_path = os.path.join(MEDIA_DIR, bc.media_path) if bc.media_path else None
                 tg_msg_id = await send_message(
                     bc.tg_account_id,
