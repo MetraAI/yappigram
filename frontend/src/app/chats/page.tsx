@@ -696,6 +696,24 @@ function ChatsContent() {
   const [dateToFilter, setDateToFilter] = useState("");
   const [timeFromFilter, setTimeFromFilter] = useState("");
   const [timeToFilter, setTimeToFilter] = useState("");
+  const dateFilterRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!dateFilterOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (dateFilterRef.current && !dateFilterRef.current.contains(e.target as Node)) {
+        setDateFilterOpen(false);
+      }
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDateFilterOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [dateFilterOpen]);
 
   // Emoji picker
   const [showEmoji, setShowEmoji] = useState(false);
@@ -1794,8 +1812,12 @@ function ChatsContent() {
             </div>
           )}
 
-          {/* Filter bar: archive toggle + date filter + tag filter */}
-          <div className="flex items-center gap-1.5 px-4 pt-1 pb-2 overflow-x-auto flex-nowrap" style={{ scrollbarWidth: "thin" }}>
+          {/* Filter bar: Archive + Date filter live OUTSIDE the horizontal
+              scroll container. If they were inside, the browser would
+              clip the Date popover vertically because `overflow-x-auto`
+              forces `overflow-y: auto` per CSS spec. Tags remain
+              scrollable on their own row/column. */}
+          <div className="flex items-center gap-1.5 px-4 pt-1 pb-2">
             <button
               onClick={() => setShowArchived(!showArchived)}
               className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all shrink-0 ${
@@ -1806,7 +1828,7 @@ function ChatsContent() {
             >
               {showArchived ? "◀ Чаты" : "Архив"}
             </button>
-            <div className="relative shrink-0">
+            <div ref={dateFilterRef} className="relative shrink-0">
               <button
                 onClick={() => setDateFilterOpen((v) => !v)}
                 className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all flex items-center gap-1 ${
@@ -1823,7 +1845,7 @@ function ChatsContent() {
                 {dateFilterActive && <span className="ml-0.5">●</span>}
               </button>
               {dateFilterOpen && (
-                <div className="absolute left-0 top-full mt-1 z-20 w-72 bg-surface-card border border-surface-border rounded-xl p-3 shadow-xl space-y-2.5 animate-fade-in">
+                <div className="absolute left-0 top-full mt-1 z-30 w-72 bg-surface-card border border-surface-border rounded-xl p-3 shadow-xl space-y-2.5 animate-fade-in">
                   <div className="text-[11px] font-medium text-slate-400 mb-0.5">Фильтр по дате сообщения</div>
                   <div>
                     <label className="text-[10px] text-slate-500 block mb-1">От</label>
@@ -1882,23 +1904,26 @@ function ChatsContent() {
                 </div>
               )}
             </div>
-            {allTags.map((tag) => (
-              <button
-                key={tag.id}
-                onClick={() => setFilterTag(filterTag === tag.name ? null : tag.name)}
-                className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all shrink-0 whitespace-nowrap ${
-                  filterTag === tag.name
-                    ? "border-transparent shadow-sm"
-                    : "border-surface-border opacity-50 hover:opacity-80"
-                }`}
-                style={{ backgroundColor: tag.color + "25", color: tag.color, borderColor: filterTag === tag.name ? tag.color + "40" : undefined }}
-              >
-                {tag.name}
-              </button>
-            ))}
-            {filterTag && (
-              <button onClick={() => setFilterTag(null)} className="text-[10px] text-slate-500 hover:text-white">✕</button>
-            )}
+            {/* Tag chips — only this row scrolls horizontally */}
+            <div className="flex items-center gap-1.5 overflow-x-auto flex-nowrap min-w-0 flex-1" style={{ scrollbarWidth: "thin" }}>
+              {allTags.map((tag) => (
+                <button
+                  key={tag.id}
+                  onClick={() => setFilterTag(filterTag === tag.name ? null : tag.name)}
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all shrink-0 whitespace-nowrap ${
+                    filterTag === tag.name
+                      ? "border-transparent shadow-sm"
+                      : "border-surface-border opacity-50 hover:opacity-80"
+                  }`}
+                  style={{ backgroundColor: tag.color + "25", color: tag.color, borderColor: filterTag === tag.name ? tag.color + "40" : undefined }}
+                >
+                  {tag.name}
+                </button>
+              ))}
+              {filterTag && (
+                <button onClick={() => setFilterTag(null)} className="text-[10px] text-slate-500 hover:text-white">✕</button>
+              )}
+            </div>
           </div>
         </div>
         <div className="flex-1 min-h-0 relative">
