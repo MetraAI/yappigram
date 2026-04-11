@@ -4876,12 +4876,16 @@ async def update_timezone(user: CurrentUser, db: DB, timezone: str = Query(...))
 async def report_new_chats(
     user: CurrentUser,
     db: DB,
-    from_date: str = Query(..., description="ISO date, e.g. 2026-03-20"),
-    to_date: str = Query(..., description="ISO date, e.g. 2026-03-23"),
+    from_date: str = Query(..., description="ISO date or datetime, e.g. 2026-03-20 or 2026-03-20T14:30"),
+    to_date: str = Query(..., description="ISO date or datetime, e.g. 2026-03-23 or 2026-03-23T17:45"),
     tg_account_id: UUID | None = Query(None),
     timezone: str = Query("UTC"),
 ):
     """Report: chats where the FIRST message landed inside the date range.
+
+    Accepts both plain dates (whole-day semantics) and datetime-local values
+    (hour/minute precision). When the range spans <= 48 hours, the
+    per-period buckets are hourly; otherwise daily.
 
     The previous implementation counted `Contact.created_at BETWEEN from AND to`,
     which is the database insert timestamp — a sync run dumped every existing
@@ -4894,11 +4898,28 @@ async def report_new_chats(
     if timezone not in VALID_TIMEZONES:
         timezone = "UTC"
 
-    try:
-        start = datetime.fromisoformat(from_date)
-        end = datetime.fromisoformat(to_date).replace(hour=23, minute=59, second=59)
-    except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid date format. Use YYYY-MM-DD.")
+    # Accept both `YYYY-MM-DD` and `YYYY-MM-DDTHH:MM[:SS]`. For plain dates,
+    # `start` is 00:00 and `end` is 23:59:59 to keep the old whole-day
+    # semantics. For datetime values, we take them literally so the user
+    # can drill down to e.g. "2026-04-11T09:00 — 2026-04-11T18:00".
+    def _parse_dt(s: str, end_of_day: bool) -> datetime:
+        try:
+            if "T" in s or " " in s:
+                return datetime.fromisoformat(s.replace(" ", "T"))
+            d = datetime.fromisoformat(s)
+            if end_of_day:
+                return d.replace(hour=23, minute=59, second=59)
+            return d
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM.")
+
+    start = _parse_dt(from_date, end_of_day=False)
+    end = _parse_dt(to_date, end_of_day=True)
+    if end < start:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "`to_date` must be >= `from_date`")
+
+    range_seconds = (end - start).total_seconds()
+    bucket = "hour" if range_seconds <= 48 * 3600 else "day"
 
     org = _org_id(user)
     org_accounts = select(TgAccount.id).where(TgAccount.org_id == org)
@@ -4934,19 +4955,27 @@ async def report_new_chats(
     )
     total = (await db.execute(total_q)).scalar() or 0
 
-    # --- by day (in target timezone) ---
-    day_expr = func.date(first_msg_sub.c.first_at.op("AT TIME ZONE")("UTC").op("AT TIME ZONE")(timezone))
-    by_day_q = (
-        select(day_expr.label("day"), func.count(Contact.id).label("cnt"))
+    # --- by bucket (hour for tight ranges, day otherwise), in target tz ---
+    tz_first_at = first_msg_sub.c.first_at.op("AT TIME ZONE")("UTC").op("AT TIME ZONE")(timezone)
+    if bucket == "hour":
+        bucket_expr = func.date_trunc("hour", tz_first_at)
+    else:
+        bucket_expr = func.date_trunc("day", tz_first_at)
+    by_bucket_q = (
+        select(bucket_expr.label("bucket"), func.count(Contact.id).label("cnt"))
         .join(first_msg_sub, first_msg_sub.c.contact_id == Contact.id)
         .where(*base_where)
-        .group_by(day_expr)
-        .order_by(day_expr)
+        .group_by(bucket_expr)
+        .order_by(bucket_expr)
     )
-    by_day = [
-        {"date": str(row.day), "count": row.cnt}
-        for row in (await db.execute(by_day_q)).all()
-    ]
+    by_day = []
+    for row in (await db.execute(by_bucket_q)).all():
+        if bucket == "hour" and row.bucket is not None:
+            # Label as "YYYY-MM-DD HH:00" so the frontend can render it verbatim.
+            label = row.bucket.strftime("%Y-%m-%d %H:00")
+        else:
+            label = str(row.bucket)[:10] if row.bucket else ""
+        by_day.append({"date": label, "count": row.cnt})
 
     # --- by account ---
     by_account_q = (

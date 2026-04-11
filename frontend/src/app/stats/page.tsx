@@ -30,6 +30,11 @@ function NewChatsSection() {
     return d.toISOString().slice(0, 10);
   });
   const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
+  // Optional time pickers — empty means "whole day" (00:00 for from, 23:59 for to).
+  // When filled, the range narrows to the specific hour. Lets the user ask
+  // "how many new chats between 2026-04-11 09:00 and 2026-04-11 18:00".
+  const [fromTime, setFromTime] = useState("");
+  const [toTime, setToTime] = useState("");
   const [accountFilter, setAccountFilter] = useState("");
   const [report, setReport] = useState<NewChatsReport | null>(null);
   const [loading, setLoading] = useState(false);
@@ -47,7 +52,11 @@ function NewChatsSection() {
   const handleFetch = async () => {
     setLoading(true);
     try {
-      const data = await fetchNewChatsReport(fromDate, toDate, accountFilter || undefined, userTz);
+      // Join date + optional time into datetime-local strings the backend
+      // understands. Empty time = whole day on the backend side.
+      const fromParam = fromTime ? `${fromDate}T${fromTime}` : fromDate;
+      const toParam = toTime ? `${toDate}T${toTime}` : toDate;
+      const data = await fetchNewChatsReport(fromParam, toParam, accountFilter || undefined, userTz);
       setReport(data);
     } catch (e: any) {
       alert(e.message);
@@ -63,21 +72,39 @@ function NewChatsSection() {
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1.5">
             <label className="text-sm text-slate-400 font-medium">От</label>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="bg-surface border border-surface-border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-brand/50 transition-all duration-200 text-slate-300"
-            />
+            <div className="flex gap-2">
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="flex-1 bg-surface border border-surface-border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-brand/50 transition-all duration-200 text-slate-300"
+              />
+              <input
+                type="time"
+                value={fromTime}
+                onChange={(e) => setFromTime(e.target.value)}
+                title="Необязательно — оставьте пустым для начала дня"
+                className="w-28 bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 transition-all duration-200 text-slate-300"
+              />
+            </div>
           </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-sm text-slate-400 font-medium">До</label>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="bg-surface border border-surface-border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-brand/50 transition-all duration-200 text-slate-300"
-            />
+            <div className="flex gap-2">
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="flex-1 bg-surface border border-surface-border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-brand/50 transition-all duration-200 text-slate-300"
+              />
+              <input
+                type="time"
+                value={toTime}
+                onChange={(e) => setToTime(e.target.value)}
+                title="Необязательно — оставьте пустым для конца дня"
+                className="w-28 bg-surface border border-surface-border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand/50 transition-all duration-200 text-slate-300"
+              />
+            </div>
           </div>
         </div>
         {accounts.length > 0 && (
@@ -108,7 +135,10 @@ function NewChatsSection() {
 
             {report.by_day.length > 0 && (
               <div>
-                <h3 className="text-sm font-medium text-slate-300 mb-2">По дням</h3>
+                <h3 className="text-sm font-medium text-slate-300 mb-2">
+                  {/* Labels like "2026-04-11 14:00" indicate hourly buckets */}
+                  {report.by_day[0]?.date?.includes(":") ? "По часам" : "По дням"}
+                </h3>
                 <div className="space-y-1">
                   {report.by_day.map((d) => (
                     <div key={d.date} className="flex justify-between items-center bg-surface rounded-lg px-3 py-2 text-sm">
