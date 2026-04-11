@@ -828,7 +828,33 @@ function ChatsContent() {
       fetchContacts(undefined, acctId, false),
       fetchContacts(undefined, acctId, true),
     ]).then(([normal, archived]) => {
-      setContacts([...normal, ...archived]);
+      const merged = [...normal, ...archived];
+      setContacts(merged);
+      // Drop stale draft entries that point to contacts no longer in any
+      // of the user's accounts (deleted, purged, etc). Stale drafts gave
+      // phantom priority-1 positions right below pinned chats.
+      //
+      // IMPORTANT: only prune when no account filter is active. With a
+      // filter, `merged` is limited to ONE account's contacts — pruning
+      // against that list would silently delete drafts on contacts from
+      // the user's OTHER accounts when they toggle the filter.
+      if (!acctId) {
+        setDrafts((prev) => {
+          if (prev.size === 0) return prev;
+          const liveIds = new Set(merged.map((c) => c.id));
+          let dirty = false;
+          const next = new Map(prev);
+          for (const id of Array.from(next.keys())) {
+            if (!liveIds.has(id)) {
+              next.delete(id);
+              dirty = true;
+            }
+          }
+          if (!dirty) return prev;
+          try { localStorage.setItem("crm_drafts", JSON.stringify(Object.fromEntries(next))); } catch {}
+          return next;
+        });
+      }
     }).catch(() => {});
   }, [filterAccountId, accountsReady]);
 
@@ -871,8 +897,14 @@ function ChatsContent() {
           }
           const msgPreview = event.message?.content || (event.message?.media_type ? `[${event.message.media_type}]` : "") || "";
           const msgDir = event.message?.direction || "incoming";
+          // Use the server's created_at (formatted as `.isoformat()` so it
+          // matches what /api/contacts returns) instead of Date.now(). Without
+          // this the optimistic timestamp gets a "Z" suffix and different
+          // precision than the server, so the next refetch flips the chat's
+          // position in the sort — visible as "chats jump then disappear".
+          const serverTs = event.message?.created_at || new Date().toISOString();
           return prev
-            .map((c) => c.id === event.contact_id ? { ...c, last_message_at: new Date().toISOString(), last_message_content: msgPreview.slice(0, 100), last_message_direction: msgDir, last_message_is_read: false } : c);
+            .map((c) => c.id === event.contact_id ? { ...c, last_message_at: serverTs, last_message_content: msgPreview.slice(0, 100), last_message_direction: msgDir, last_message_is_read: false } : c);
         });
         if (isCurrentChat) {
           setMessages((prev) => {

@@ -1644,10 +1644,32 @@ async def delete_contact(contact_id: UUID, user: AdminUser, db: DB):
 
 @app.get("/api/pinned")
 async def get_pinned(user: Annotated[Staff, Depends(get_current_user)], db: DB):
+    """Return pinned contact IDs, filtered to LIVE non-archived contacts
+    that still belong to one of the user's accessible TG accounts.
+
+    Without this filter the frontend would see ghost pins: a PinnedChat
+    row survives archive/delete/account-disconnect and kept surfacing as
+    "pinned" in the Set, causing stale/archived chats to appear right
+    below the pinned block and then disappear after the next refetch.
+    """
     org = _org_id(user)
-    result = await db.execute(
-        select(PinnedChat.contact_id).where(PinnedChat.org_id == org)
+    query = (
+        select(PinnedChat.contact_id)
+        .join(Contact, Contact.id == PinnedChat.contact_id)
+        .where(
+            PinnedChat.org_id == org,
+            Contact.is_archived.is_(False),
+            Contact.tg_account_id.in_(_org_accounts_subq(user)),
+        )
     )
+    # Operators see contacts from their assigned TG accounts only —
+    # mirror the same restriction list_contacts applies so the pinned
+    # set can't leak contact UUIDs from accounts the operator isn't
+    # authorized to see.
+    if user.role == "operator":
+        sub = select(StaffTgAccount.tg_account_id).where(StaffTgAccount.staff_id == user.id)
+        query = query.where(Contact.tg_account_id.in_(sub))
+    result = await db.execute(query)
     return [str(row[0]) for row in result.all()]
 
 

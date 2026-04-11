@@ -539,7 +539,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                     "media_path": msg.media_path,
                     "forwarded_from_alias": msg.forwarded_from_alias,
                     "is_deleted": False,
-                    "created_at": str(msg.created_at),
+                    "created_at": msg.created_at.isoformat() if msg.created_at else None,
                 },
             }, org_id=account.org_id)
 
@@ -827,7 +827,7 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         "topic_name": msg.topic_name,
                         "inline_buttons": msg.inline_buttons,
                         "is_deleted": False,
-                        "created_at": str(msg.created_at),
+                        "created_at": msg.created_at.isoformat() if msg.created_at else None,
                     },
                 }
                 await ws_manager.broadcast_to_admins(ws_event, org_id=account.org_id)
