@@ -509,6 +509,18 @@ def _attach_media_url(msg) -> None:
         msg.media_url = _build_media_signed_url(msg.media_path)
 
 
+def _touch_contact_preview(contact, content: str | None, media_type: str | None, direction: str) -> None:
+    """Mirror the latest-message fields onto the Contact row so
+    /api/contacts can read them without a per-contact subquery over
+    `messages`. Called from every send path so the denormalization
+    stays in sync with reality. `direction` is "incoming" | "outgoing".
+    """
+    preview = content or (f"[{media_type}]" if media_type else None)
+    contact.last_message_content = (preview or "")[:200] or None
+    contact.last_message_direction = direction
+    contact.last_message_is_read = False
+
+
 def _build_media_signed_url(media_path: str, ttl_seconds: int = 86400) -> str:
     """Sign a media URL for a TTL. The HMAC payload binds the media path
     and the expiry so the signature can't be reused for other files.
@@ -757,9 +769,39 @@ async def on_startup():
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_muted BOOLEAN NOT NULL DEFAULT false;
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS crm_muted BOOLEAN NOT NULL DEFAULT false;
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS avatar_thumb TEXT;
+                -- Denormalized last-message preview. Replaces the expensive
+                -- subquery that /api/contacts ran on every call.
+                ALTER TABLE contacts ADD COLUMN IF NOT EXISTS last_message_content VARCHAR(200);
+                ALTER TABLE contacts ADD COLUMN IF NOT EXISTS last_message_direction VARCHAR;
+                ALTER TABLE contacts ADD COLUMN IF NOT EXISTS last_message_is_read BOOLEAN;
+                -- One-shot backfill: populate the denormalized preview from
+                -- the latest message per contact. Without this every
+                -- historical chat shows an empty subtitle until its next
+                -- message arrives. Guarded by a NULL check so it's a no-op
+                -- on subsequent deploys.
+                UPDATE contacts c SET
+                    last_message_content = LEFT(COALESCE(sub.content, '[' || sub.media_type || ']', ''), 200),
+                    last_message_direction = sub.direction,
+                    last_message_is_read = sub.is_read
+                FROM (
+                    SELECT DISTINCT ON (m.contact_id)
+                        m.contact_id, m.content, m.media_type, m.direction, m.is_read
+                    FROM messages m
+                    ORDER BY m.contact_id, m.created_at DESC
+                ) sub
+                WHERE c.id = sub.contact_id
+                  AND c.last_message_content IS NULL
+                  AND c.last_message_direction IS NULL;
                 -- Supports the contacts-list sort: pinned first, then by recency
                 CREATE INDEX IF NOT EXISTS ix_contacts_pin_recency
                     ON contacts (tg_account_id, is_archived, is_pinned DESC, last_message_at DESC NULLS LAST);
+                -- Wider covering index including `status` and excluding
+                -- service chat 777000. Planner can service list_contacts
+                -- entirely from this index without touching the heap for
+                -- the ordering step. The predicate narrows it further.
+                CREATE INDEX IF NOT EXISTS ix_contacts_list_fast
+                    ON contacts (tg_account_id, is_archived, status, is_pinned DESC, last_message_at DESC NULLS LAST)
+                    WHERE real_tg_id <> 777000;
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS max_recipients INTEGER;
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS contact_ids UUID[] DEFAULT '{}';
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS last_error TEXT;
@@ -1538,6 +1580,11 @@ async def list_contacts(
     tg_account_id: UUID | None = None,
     archived: bool = Query(False),
     search: str | None = Query(None, description="Search by alias or phone"),
+    # The denormalization (last_message_* columns) makes 2000-row responses
+    # cheap at the DB layer. Frontend still pays for payload size + JSON
+    # parse, but that's a network/client concern — add explicit pagination
+    # later if needed. Keep the default permissive so existing clients
+    # don't silently truncate their lists.
     limit: int = Query(2000, ge=1, le=5000),
     offset: int = Query(0, ge=0),
 ):
@@ -1591,35 +1638,11 @@ async def list_contacts(
     )
     show_real_map = {row[0]: row[1] for row in acct_result.all()}
 
-    # Fetch last message content for each contact (batch query)
-    contact_ids = [c.id for c in contacts]
-    last_msg_map: dict = {}
-    if contact_ids:
-        from sqlalchemy import func as sa_func
-        # Subquery: latest message per contact using created_at (MAX on UUID not supported in PG)
-        latest_sub = (
-            select(Message.contact_id, sa_func.max(Message.created_at).label("max_ts"))
-            .where(Message.contact_id.in_(contact_ids))
-            .group_by(Message.contact_id)
-            .subquery()
-        )
-        msg_result = await db.execute(
-            select(Message.contact_id, Message.content, Message.media_type, Message.direction, Message.is_read)
-            .join(latest_sub, (Message.contact_id == latest_sub.c.contact_id) & (Message.created_at == latest_sub.c.max_ts))
-        )
-        for row in msg_result.all():
-            cid = row[0]
-            if cid in last_msg_map:
-                continue
-            content = row[1]
-            if not content and row[2]:
-                content = f"[{row[2]}]"
-            last_msg_map[cid] = ((content or "")[:100], row[3], row[4])
-
-    last_msg_dir_map: dict = {}
+    # The last_message_* fields are now denormalized columns on Contact,
+    # populated by the listener / send API / read-event handlers. The old
+    # O(messages) subquery that computed them on every call is gone.
     for c in contacts:
         if c.chat_type != "private":
-            # Groups/channels — always show real title
             title = decrypt(c.group_title_encrypted) if c.group_title_encrypted else None
             if title:
                 c.alias = title
@@ -1627,15 +1650,6 @@ async def list_contacts(
             real_name = decrypt(c.real_name_encrypted) if c.real_name_encrypted else None
             if real_name:
                 c.alias = real_name
-        entry = last_msg_map.get(c.id)
-        if entry:
-            c.last_message_content = entry[0]
-            c.last_message_direction = entry[1]
-            c.last_message_is_read = entry[2]
-        else:
-            c.last_message_content = None
-            c.last_message_direction = None
-            c.last_message_is_read = None
         # Pre-compute signed avatar URL so the frontend doesn't need a
         # separate round-trip per contact. Signature binds both contact_id
         # and tg_account_id to prevent URL tampering.
@@ -2266,6 +2280,7 @@ async def send_msg(contact_id: UUID, req: SendMessage, user: CurrentUser, db: DB
     )
     db.add(msg)
     contact.last_message_at = func.now()
+    _touch_contact_preview(contact, req.content, None, "outgoing")
     await db.commit()
     await db.refresh(msg)
 
@@ -2443,6 +2458,7 @@ async def send_media(
     )
     db.add(msg)
     contact.last_message_at = func.now()
+    _touch_contact_preview(contact, caption, media_type, "outgoing")
     await db.commit()
     await db.refresh(msg)
     _attach_media_url(msg)
@@ -2485,6 +2501,7 @@ async def send_template_media(contact_id: UUID, user: CurrentUser, db: DB, templ
     )
     db.add(msg)
     contact.last_message_at = func.now()
+    _touch_contact_preview(contact, tpl.content, tpl.media_type, "outgoing")
     await db.commit()
     await db.refresh(msg)
     _attach_media_url(msg)
@@ -2552,6 +2569,7 @@ async def send_template_single_block(
             db.add(msg)
             msgs.append(msg)
         contact.last_message_at = func.now()
+        _touch_contact_preview(contact, text, "photo", "outgoing")
         await db.commit()
         for m in msgs:
             await db.refresh(m)
@@ -2593,6 +2611,7 @@ async def send_template_single_block(
     )
     db.add(msg)
     contact.last_message_at = func.now()
+    _touch_contact_preview(contact, text, media_type if block_media_path else None, "outgoing")
     await db.commit()
     await db.refresh(msg)
     _attach_media_url(msg)
@@ -2694,6 +2713,10 @@ async def send_template_blocks(contact_id: UUID, user: CurrentUser, db: DB, temp
             await asyncio.sleep(1.0)
 
     contact.last_message_at = func.now()
+    # Use the last non-empty block as the preview.
+    if sent_messages:
+        last_m = sent_messages[-1]
+        _touch_contact_preview(contact, last_m.content, last_m.media_type, "outgoing")
     await db.commit()
     for m in sent_messages:
         await db.refresh(m)
@@ -2721,7 +2744,8 @@ async def mark_read(contact_id: UUID, user: CurrentUser, db: DB):
     """Mark all unread incoming messages in a contact chat as read."""
     # Verify contact belongs to user's org
     result = await db.execute(select(Contact).where(Contact.id == contact_id, Contact.tg_account_id.in_(_org_accounts_subq(user))))
-    if not result.scalar_one_or_none():
+    contact = result.scalar_one_or_none()
+    if not contact:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
     from sqlalchemy import update
@@ -2730,6 +2754,10 @@ async def mark_read(contact_id: UUID, user: CurrentUser, db: DB):
         .where(Message.contact_id == contact_id, Message.direction == "incoming", Message.is_read.is_(False))
         .values(is_read=True)
     )
+    # Flip the denormalized preview flag so the chat-list badge clears
+    # on the next /api/contacts fetch.
+    if contact.last_message_direction == "incoming":
+        contact.last_message_is_read = True
     await db.commit()
     return {"status": "ok"}
 
@@ -2809,6 +2837,9 @@ async def forward_msg(contact_id: UUID, req: ForwardMessage, user: CurrentUser, 
         saved.append(fwd_msg)
 
     target.last_message_at = func.now()
+    if saved:
+        last = saved[-1]
+        _touch_contact_preview(target, last.content, last.media_type, "outgoing")
     await db.commit()
     return {"status": "ok", "forwarded_count": len(fwd_ids)}
 
@@ -4268,6 +4299,7 @@ async def _run_broadcast(broadcast_id: UUID):
                     )
                     db.add(msg)
                     contact.last_message_at = datetime.utcnow()
+                    _touch_contact_preview(contact, bc.content, bc.media_type, "outgoing")
 
                     recip.status = "sent"
                     recip.sent_at = datetime.utcnow()
@@ -4520,8 +4552,17 @@ async def _cleanup_disconnected_accounts():
 async def _do_sync_dialogs(account_id: UUID, limit: int | None = None) -> int:
     """Background-safe: import dialogs for a TG account. Returns count imported.
 
-    limit=None means fetch ALL dialogs. Previously defaulted to 500, which
-    silently dropped chats for users with larger archives.
+    Structural rewrite focused on DB pool pressure:
+      - One-shot alias sequence counter instead of SELECT count(*) per new
+        dialog (was O(N²), dominated long syncs at 1000+ contacts).
+      - Short-lived DB sessions per dialog — the previous version held one
+        pool slot for 5-15 minutes during a full sync, starving the pool
+        and blocking /api/contacts requests behind connection checkout.
+      - Telegram network I/O (iter_dialogs, get_messages, download_media)
+        happens OUTSIDE any open session, so connections are only held
+        while there's actual SQL to run.
+
+    limit=None means fetch ALL dialogs (both main folder and archive).
     """
     from telegram import _clients, generate_alias, _extract_media, sanitize_text, extract_stripped_thumb
     from crypto import encrypt
@@ -4535,123 +4576,90 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = None) -> int:
     imported = 0
     existing_updates = 0
 
+    # One-time: verify account + read starting alias sequence. This cold
+    # query replaces the per-new-dialog SELECT count(*) that used to run
+    # on every iteration.
     async with async_session() as db:
-        # Verify account exists
-        result = await db.execute(select(TgAccount).where(TgAccount.id == account_id))
-        account = result.scalar_one_or_none()
+        account_row = await db.execute(select(TgAccount).where(TgAccount.id == account_id))
+        account = account_row.scalar_one_or_none()
         if not account:
             print(f"[SYNC] Account {account_id} not found in DB")
             return 0
+        seq_row = await db.execute(select(func.count(Contact.id)))
+        next_seq = (seq_row.scalar() or 0) + 1
 
-        # archived=None iterates BOTH main folder AND archive folder.
-        # Default (archived=False) skips archive folder entirely, which meant
-        # archive state could never be synced for dialogs archived in Telegram.
-        async for dialog in client.iter_dialogs(limit=limit, archived=None):
-            peer_id = dialog.id
-            if not peer_id:
-                continue
+    def _decode_mute(raw_dialog) -> bool:
+        ns = getattr(raw_dialog, "notify_settings", None) if raw_dialog else None
+        mute_until = getattr(ns, "mute_until", None) if ns else None
+        if mute_until is None:
+            return False
+        try:
+            ts = mute_until.timestamp() if hasattr(mute_until, "timestamp") else float(mute_until)
+            return ts > time.time()
+        except (TypeError, ValueError, OverflowError):
+            # "forever" sentinel may overflow on some platforms — treat as muted.
+            return True
 
-            # Skip Telegram service account
-            if peer_id == 777000:
-                continue
+    # archived=None iterates BOTH main folder AND archive folder. Default
+    # (False) skips the archive folder entirely.
+    async for dialog in client.iter_dialogs(limit=limit, archived=None):
+        peer_id = dialog.id
+        if not peer_id or peer_id == 777000:
+            continue
 
-            # Sync archive + pin status from Telegram
-            is_tg_archived = bool(getattr(dialog, "archived", False))
-            is_tg_pinned = bool(getattr(dialog, "pinned", False))
-            # Mute state: Telethon exposes PeerNotifySettings.mute_until as a
-            # tz-aware `datetime` (NOT a unix int — `int(datetime)` raises).
-            # None means "inherit global default" — treat as unmuted. Telegram
-            # uses a far-future date (~year 2038) for "mute forever".
-            is_tg_muted = False
-            raw_dialog = getattr(dialog, "dialog", None)
-            ns = getattr(raw_dialog, "notify_settings", None) if raw_dialog else None
-            mute_until = getattr(ns, "mute_until", None) if ns else None
-            if mute_until is not None:
-                try:
-                    mute_ts = (
-                        mute_until.timestamp()
-                        if hasattr(mute_until, "timestamp")
-                        else float(mute_until)
-                    )
-                    if mute_ts > time.time():
-                        is_tg_muted = True
-                except (TypeError, ValueError, OverflowError):
-                    # OverflowError can fire on the "forever" sentinel on
-                    # platforms where datetime.timestamp() overflows — treat
-                    # as muted (the user did explicitly set it).
-                    is_tg_muted = True
-            # Stripped JPEG thumbnail — tiny inline preview shown while the
-            # full avatar loads. May be None for contacts without a profile photo.
-            tg_thumb = extract_stripped_thumb(dialog.entity)
+        is_tg_archived = bool(getattr(dialog, "archived", False))
+        is_tg_pinned = bool(getattr(dialog, "pinned", False))
+        is_tg_muted = _decode_mute(getattr(dialog, "dialog", None))
+        tg_thumb = extract_stripped_thumb(dialog.entity)
+        dialog_date = getattr(dialog, "date", None)
+        tg_last_msg_at = None
+        if dialog_date:
+            tg_last_msg_at = dialog_date.replace(tzinfo=None) if dialog_date.tzinfo else dialog_date
 
-            # Update existing contacts
+        # --- short-lived session: update-existing-or-create path ---
+        async with async_session() as db:
             result = await db.execute(
                 select(Contact).where(Contact.tg_account_id == account_id, Contact.real_tg_id == peer_id)
             )
             existing = result.scalars().first()
+
             if existing:
                 dirty = False
-                # Sync pin status — Telegram is the source of truth for pinning
-                # (unlike archive, which the user can override in CRM).
                 if existing.is_pinned != is_tg_pinned:
                     existing.is_pinned = is_tg_pinned
                     dirty = True
-
-                # Sync mute state — Telegram is the source of truth.
                 if existing.is_muted != is_tg_muted:
                     existing.is_muted = is_tg_muted
                     dirty = True
-
-                # Sync archive: one-way, TG archived -> CRM archived, but do NOT
-                # unarchive if user already unarchived in CRM (prevents the
-                # re-archiving loop that commit 89bf3a4 fixed).
+                # One-way archive sync: TG archived -> CRM archived, never
+                # un-archive (prevents the re-archive loop from 89bf3a4).
                 if is_tg_archived and not existing.is_archived:
                     existing.is_archived = True
                     dirty = True
-
-                # Sync stripped thumbnail. Telegram returns a new thumb whenever
-                # the profile photo changes, so a diff here is our signal that
-                # the cached full-res avatar is stale and must be re-downloaded.
-                # Covers all transitions: None→value (new photo), value→value
-                # (photo replaced), value→None (photo removed).
+                # Stripped thumb diff = profile photo changed → invalidate
+                # the on-disk full-res cache so next /avatar re-downloads.
                 if existing.avatar_thumb != tg_thumb:
                     existing.avatar_thumb = tg_thumb
                     dirty = True
-                    # Invalidate the on-disk full-res cache so the next
-                    # /avatar request re-downloads from Telegram. Without
-                    # this, the 24h file cache would keep serving the stale
-                    # image for up to a day after the user changes their
-                    # profile photo in the Telegram app.
                     try:
                         _stale_path = os.path.join(MEDIA_DIR, "avatars", f"{existing.id}.jpg")
                         if os.path.exists(_stale_path):
                             os.remove(_stale_path)
                     except Exception as _e:
                         print(f"[SYNC] avatar cache invalidate failed: {_e}")
-
-                # Sync last_message_at from Telegram if more recent
-                dialog_date = getattr(dialog, "date", None)
-                if dialog_date:
-                    tg_ts = dialog_date.replace(tzinfo=None) if dialog_date.tzinfo else dialog_date
-                    if not existing.last_message_at or tg_ts > existing.last_message_at:
-                        existing.last_message_at = tg_ts
-                        dirty = True
-
+                if tg_last_msg_at and (not existing.last_message_at or tg_last_msg_at > existing.last_message_at):
+                    existing.last_message_at = tg_last_msg_at
+                    dirty = True
                 if dirty:
+                    await db.commit()
                     existing_updates += 1
-                    # Batch-commit every 50 dirty existing rows so a long sync
-                    # doesn't hold one giant uncommitted transaction (and so
-                    # pin/archive changes are persisted even if no new contacts
-                    # are created on this run).
-                    if existing_updates % 50 == 0:
-                        await db.commit()
                 continue
 
-            # Don't create new contacts for archived dialogs — only sync existing ones
+            # Skip creating rows for archived dialogs.
             if is_tg_archived:
                 continue
 
-            # Determine chat type
+            # --- new contact ---
             entity = dialog.entity
             is_forum = getattr(entity, "forum", False)
             if getattr(entity, "megagroup", False) or is_forum:
@@ -4662,25 +4670,20 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = None) -> int:
                 chat_type = "channel"
             else:
                 chat_type = "private"
-
-            # Get name
             name = dialog.name or ""
             username = getattr(entity, "username", None)
 
-            # Generate alias
-            seq_result = await db.execute(select(func.count(Contact.id)))
-            seq = seq_result.scalar() + 1
-
-            alias_base = generate_alias(name, seq)
-            while True:
-                check = await db.execute(select(Contact).where(Contact.alias == alias_base))
+            # Alias generation: start from in-memory counter, fall back to
+            # per-alias lookup only on collision (rare).
+            alias_base = generate_alias(name, next_seq)
+            next_seq += 1
+            for _ in range(10):
+                check = await db.execute(select(Contact.id).where(Contact.alias == alias_base))
                 if not check.scalar_one_or_none():
                     break
-                seq += 1
-                alias_base = generate_alias(name, seq)
+                alias_base = generate_alias(name, next_seq)
+                next_seq += 1
 
-            dialog_date = getattr(dialog, "date", None)
-            last_msg_at = dialog_date.replace(tzinfo=None) if dialog_date and dialog_date.tzinfo else dialog_date
             contact = Contact(
                 tg_account_id=account_id,
                 real_tg_id=peer_id,
@@ -4692,109 +4695,118 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = None) -> int:
                 alias=alias_base,
                 status="approved",
                 approved_at=datetime.utcnow(),
-                last_message_at=last_msg_at,
+                last_message_at=tg_last_msg_at,
                 is_pinned=is_tg_pinned,
                 is_muted=is_tg_muted,
                 avatar_thumb=tg_thumb,
             )
             db.add(contact)
-            await db.commit()
-            await db.refresh(contact)
-
-            # Import last N messages from this dialog
-            msg_limit = 200 if is_forum else 30
             try:
-                msgs = await client.get_messages(peer_id, limit=msg_limit)
-                for msg_obj in reversed(msgs):
-                    if not msg_obj or not (msg_obj.text or msg_obj.media):
-                        continue
-
-                    sender_id = getattr(msg_obj, "sender_id", None) or getattr(msg_obj, "from_id", None)
-                    if hasattr(sender_id, "user_id"):
-                        sender_id = sender_id.user_id
-                    direction = "outgoing" if sender_id == me.id else "incoming"
-
-                    media_type, ext = _extract_media(msg_obj)
-                    media_path = None
-                    if media_type and msg_obj.media:
-                        try:
-                            fname = f"{contact.id}_{msg_obj.id}{ext or ''}"
-                            dl_path = os.path.join(MEDIA_DIR, fname)
-                            await client.download_media(msg_obj, file=dl_path)
-                            media_path = fname
-                        except Exception:
-                            pass
-
-                    # Sender info for group messages
-                    sender_tg_id_val = None
-                    sender_alias_val = None
-                    if chat_type != "private" and direction == "incoming":
-                        sender = getattr(msg_obj, "sender", None)
-                        if sender:
-                            sender_tg_id_val = getattr(sender, "id", None)
-                            fname = getattr(sender, "first_name", "") or ""
-                            lname = getattr(sender, "last_name", "") or ""
-                            title = getattr(sender, "title", "") or ""
-                            sender_alias_val = (f"{fname} {lname}".strip() or title or "User")
-
-                    # Topic info for forum supergroups
-                    topic_id_val = None
-                    topic_name_val = None
-                    if is_forum and hasattr(msg_obj, "reply_to") and msg_obj.reply_to:
-                        rt = msg_obj.reply_to
-                        if getattr(rt, "forum_topic", False):
-                            topic_id_val = getattr(rt, "reply_to_msg_id", None)
-                        else:
-                            topic_id_val = getattr(rt, "reply_to_top_id", None) or getattr(rt, "reply_to_msg_id", None)
-                    elif is_forum:
-                        topic_id_val = 1  # General topic
-
-                    if topic_id_val is not None:
-                        from telegram import _resolve_topic_name
-                        topic_name_val = await _resolve_topic_name(client, peer_id, topic_id_val, account_id)
-
-                    # Forwarded from
-                    fwd_alias = None
-                    if msg_obj.forward:
-                        fwd_sender = msg_obj.forward.sender
-                        if fwd_sender:
-                            fn = getattr(fwd_sender, "first_name", "") or ""
-                            ln = getattr(fwd_sender, "last_name", "") or ""
-                            tt = getattr(fwd_sender, "title", "") or ""
-                            fwd_alias = (f"{fn} {ln}".strip() or tt or "User")
-
-                    # Strip timezone to match naive datetime columns
-                    msg_date = msg_obj.date.replace(tzinfo=None) if msg_obj.date else datetime.utcnow()
-                    db_msg = Message(
-                        contact_id=contact.id,
-                        tg_message_id=msg_obj.id,
-                        direction=direction,
-                        content=sanitize_text(msg_obj.text),
-                        media_type=media_type,
-                        media_path=media_path,
-                        is_read=True,
-                        sender_tg_id=sender_tg_id_val,
-                        sender_alias=sender_alias_val,
-                        topic_id=topic_id_val,
-                        topic_name=topic_name_val,
-                        forwarded_from_alias=fwd_alias,
-                        created_at=msg_date,
-                    )
-                    db.add(db_msg)
-
                 await db.commit()
+                await db.refresh(contact)
             except Exception as e:
                 await db.rollback()
-                print(f"[SYNC] Failed to import messages for {peer_id}: {e}")
+                print(f"[SYNC] Failed to insert contact {peer_id}: {e}")
+                continue
+            contact_id_new = contact.id
+            contact_is_forum = is_forum
+            contact_chat_type = chat_type
 
+        # --- Telegram I/O happens OUTSIDE any open session ---
+        msg_limit = 200 if contact_is_forum else 30
+        try:
+            msgs = await client.get_messages(peer_id, limit=msg_limit)
+        except Exception as e:
+            print(f"[SYNC] Failed to fetch messages for {peer_id}: {e}")
             imported += 1
-            # Small delay to avoid overwhelming DB/Telegram
-            if imported % 10 == 0:
-                await asyncio.sleep(0.5)
+            continue
 
-        # Final commit: flushes any pending pin/archive/last_message_at updates
-        # for existing contacts that weren't captured by the batch-commit above.
-        await db.commit()
+        # Prepare all message data (including media downloads) without
+        # holding a DB connection. We only reopen the session to insert.
+        pending_rows: list[dict] = []
+        for msg_obj in reversed(msgs):
+            if not msg_obj or not (msg_obj.text or msg_obj.media):
+                continue
+            sender_id = getattr(msg_obj, "sender_id", None) or getattr(msg_obj, "from_id", None)
+            if hasattr(sender_id, "user_id"):
+                sender_id = sender_id.user_id
+            direction = "outgoing" if sender_id == me.id else "incoming"
+
+            media_type, ext = _extract_media(msg_obj)
+            media_path = None
+            if media_type and msg_obj.media:
+                try:
+                    fname = f"{contact_id_new}_{msg_obj.id}{ext or ''}"
+                    dl_path = os.path.join(MEDIA_DIR, fname)
+                    await client.download_media(msg_obj, file=dl_path)
+                    media_path = fname
+                except Exception:
+                    pass
+
+            sender_tg_id_val = None
+            sender_alias_val = None
+            if contact_chat_type != "private" and direction == "incoming":
+                sender = getattr(msg_obj, "sender", None)
+                if sender:
+                    sender_tg_id_val = getattr(sender, "id", None)
+                    fname = getattr(sender, "first_name", "") or ""
+                    lname = getattr(sender, "last_name", "") or ""
+                    title = getattr(sender, "title", "") or ""
+                    sender_alias_val = (f"{fname} {lname}".strip() or title or "User")
+
+            topic_id_val = None
+            topic_name_val = None
+            if contact_is_forum and hasattr(msg_obj, "reply_to") and msg_obj.reply_to:
+                rt = msg_obj.reply_to
+                if getattr(rt, "forum_topic", False):
+                    topic_id_val = getattr(rt, "reply_to_msg_id", None)
+                else:
+                    topic_id_val = getattr(rt, "reply_to_top_id", None) or getattr(rt, "reply_to_msg_id", None)
+            elif contact_is_forum:
+                topic_id_val = 1
+            if topic_id_val is not None:
+                from telegram import _resolve_topic_name
+                topic_name_val = await _resolve_topic_name(client, peer_id, topic_id_val, account_id)
+
+            fwd_alias = None
+            if msg_obj.forward:
+                fwd_sender = msg_obj.forward.sender
+                if fwd_sender:
+                    fn = getattr(fwd_sender, "first_name", "") or ""
+                    ln = getattr(fwd_sender, "last_name", "") or ""
+                    tt = getattr(fwd_sender, "title", "") or ""
+                    fwd_alias = (f"{fn} {ln}".strip() or tt or "User")
+
+            msg_date = msg_obj.date.replace(tzinfo=None) if msg_obj.date else datetime.utcnow()
+            pending_rows.append({
+                "contact_id": contact_id_new,
+                "tg_message_id": msg_obj.id,
+                "direction": direction,
+                "content": sanitize_text(msg_obj.text),
+                "media_type": media_type,
+                "media_path": media_path,
+                "is_read": True,
+                "sender_tg_id": sender_tg_id_val,
+                "sender_alias": sender_alias_val,
+                "topic_id": topic_id_val,
+                "topic_name": topic_name_val,
+                "forwarded_from_alias": fwd_alias,
+                "created_at": msg_date,
+            })
+
+        if pending_rows:
+            async with async_session() as db:
+                try:
+                    for row in pending_rows:
+                        db.add(Message(**row))
+                    await db.commit()
+                except Exception as e:
+                    await db.rollback()
+                    print(f"[SYNC] Failed to persist messages for {peer_id}: {e}")
+
+        imported += 1
+        if imported % 10 == 0:
+            await asyncio.sleep(0.5)
 
     print(f"[SYNC] Finished: imported {imported} new, updated {existing_updates} existing for account {account_id}")
     return imported

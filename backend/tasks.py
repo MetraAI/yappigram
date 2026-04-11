@@ -84,6 +84,13 @@ async def process_scheduled_messages():
                         )
                         db.add(msg)
                         contact.last_message_at = func.now()
+                        # Denormalized preview (same logic as app.py
+                        # _touch_contact_preview — inlined to avoid a
+                        # circular import back into app.py).
+                        _preview = sm.content or (f"[{sm.media_type}]" if sm.media_type else None)
+                        contact.last_message_content = (_preview or "")[:200] or None
+                        contact.last_message_direction = "outgoing"
+                        contact.last_message_is_read = False
                         sm.status = "sent"
                         sm.sent_at = func.now()
                         print(f"[SCHEDULED] Sent message {sm.id} to {contact.alias}")

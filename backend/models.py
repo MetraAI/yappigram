@@ -140,6 +140,15 @@ class Contact(Base):
     # run from `entity.photo.stripped_thumb`.
     avatar_thumb = Column(Text, nullable=True)
 
+    # Denormalized last-message preview fields. Populated on every new
+    # message (listener + CRM send API) + on read events. `list_contacts`
+    # used to recompute these on every call via a per-contact subquery
+    # over `messages` that scanned O(total_messages) rows; the denorm
+    # reduces the hot path to a single indexed scan of `contacts`.
+    last_message_content = Column(String(200), nullable=True)
+    last_message_direction = Column(String, nullable=True)  # "incoming" | "outgoing"
+    last_message_is_read = Column(Boolean, nullable=True)
+
     created_at = Column(DateTime, default=func.now())
     approved_at = Column(DateTime, nullable=True)
     last_message_at = Column(DateTime, nullable=True)

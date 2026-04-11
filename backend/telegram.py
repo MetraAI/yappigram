@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import time as _time_module
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -56,6 +57,39 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # Active Telethon clients: tg_account_id -> TelegramClient
 _clients: dict[UUID, TelegramClient] = {}
+
+# Tracker for messages sent by the CRM API (via `send_message` below).
+# The Telethon "outgoing" event fires for these too, racing with the CRM
+# API's own Message insert. Before this tracker, the outgoing handler
+# slept 1.5s to let the CRM commit first — a per-send latency hit that
+# also capped throughput at ~0.67 outgoing events/sec. Now the CRM path
+# marks the tg_msg_id here and the listener skips it immediately.
+#
+# Key: (account_id, tg_message_id). Value: expiry unix ts. Bounded size;
+# stale entries are evicted opportunistically on insert.
+_crm_sent_tracker: dict[tuple, float] = {}
+_CRM_SENT_TTL = 30.0
+
+
+def _mark_crm_sent(account_id: UUID, tg_msg_id: int) -> None:
+    now = _time_module.time()
+    _crm_sent_tracker[(account_id, tg_msg_id)] = now + _CRM_SENT_TTL
+    # Opportunistic GC: when the dict gets "big", drop expired entries.
+    if len(_crm_sent_tracker) > 1000:
+        expired = [k for k, exp in _crm_sent_tracker.items() if exp < now]
+        for k in expired:
+            _crm_sent_tracker.pop(k, None)
+
+
+def _is_crm_sent(account_id: UUID, tg_msg_id: int) -> bool:
+    exp = _crm_sent_tracker.get((account_id, tg_msg_id))
+    if exp is None:
+        return False
+    if exp < _time_module.time():
+        _crm_sent_tracker.pop((account_id, tg_msg_id), None)
+        return False
+    return True
+
 _reconnect_locks: dict[UUID, asyncio.Lock] = {}  # per-account reconnect lock
 
 # Per-account error tracking for circuit breaker
@@ -427,8 +461,13 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
         if not chat:
             return
 
-        # Wait for CRM API to finish saving the message (avoid duplicate)
-        await asyncio.sleep(1.5)
+        # Skip messages sent through the CRM API — they're already being
+        # saved by the API handler. The previous 1.5s sleep here was a
+        # race-condition workaround that capped outgoing throughput at
+        # ~0.67 events/sec; the in-memory tracker is O(1) and avoids the
+        # sleep entirely. DB dedup check below is kept as a safety net.
+        if _is_crm_sent(account.id, msg_obj.id):
+            return
 
         is_group = event.is_group or event.is_channel
         peer_tg_id = event.chat_id
@@ -524,6 +563,10 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             )
             db.add(msg)
             contact.last_message_at = func.now()
+            _preview = sanitized_content or (f"[{media_type}]" if media_type else None)
+            contact.last_message_content = (_preview or "")[:200] or None
+            contact.last_message_direction = "outgoing"
+            contact.last_message_is_read = False
             await db.commit()
             await db.refresh(msg)
 
@@ -621,10 +664,13 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                     first_name = getattr(sender, "first_name", "") or ""
                     username = getattr(sender, "username", None)
 
-                # Retry alias generation on collision
+                # Alias seed is random — avoids SELECT count(*) FROM contacts
+                # on every new peer, which was O(N) per incoming message and
+                # dominated DB CPU once the contact table grew past 100k rows.
+                # Collisions fall back to the retry loop (rare at 6 digits).
+                import random as _random
                 for _attempt in range(5):
-                    count_result = await db.execute(select(func.count(Contact.id)))
-                    seq = count_result.scalar() + 1 + _attempt
+                    seq = _random.randint(1, 999999)
 
                     if is_group:
                         contact = Contact(
@@ -783,6 +829,12 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             )
             db.add(msg)
             contact.last_message_at = func.now()
+            # Keep the denormalized preview fields in sync. /api/contacts
+            # reads them directly — no subquery over messages on every call.
+            _preview = sanitized_content or (f"[{media_type}]" if media_type else None)
+            contact.last_message_content = (_preview or "")[:200] or None
+            contact.last_message_direction = "incoming"
+            contact.last_message_is_read = False
             # Save before commit — attributes expire after commit
             contact_assigned_to = contact.assigned_to
             contact_tg_account_id = contact.tg_account_id
@@ -871,11 +923,29 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
     @_safe_handler
     async def on_message_edited(event):
         msg_obj = event.message
+        # Resolve the contact from the peer FIRST so the message lookup
+        # can use the composite (contact_id, tg_message_id) index. Without
+        # the contact_id filter the query falls back to a seq scan of the
+        # entire messages table — every edit across every account used
+        # to churn through tens of millions of rows.
+        peer_tg_id = event.chat_id
+        if not peer_tg_id:
+            return
         async with async_session() as db:
+            contact_row = await db.execute(
+                select(Contact.id).where(
+                    Contact.tg_account_id == account.id,
+                    Contact.real_tg_id == peer_tg_id,
+                ).limit(1)
+            )
+            contact_pk = contact_row.scalar_one_or_none()
+            if not contact_pk:
+                return
             result = await db.execute(
                 select(Message).where(
+                    Message.contact_id == contact_pk,
                     Message.tg_message_id == msg_obj.id,
-                ).order_by(Message.created_at.desc()).limit(1)
+                ).limit(1)
             )
             msg = result.scalar_one_or_none()
             if not msg:
@@ -951,6 +1021,11 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             for m in unread_msgs:
                 m.is_read = True
                 msg_ids.append(str(m.id))
+            # Denormalized preview: when the other party reads our last
+            # outgoing message, flip the contact's is_read flag so the
+            # chat list shows the double-checkmark on refetch.
+            if contact.last_message_direction == "outgoing":
+                contact.last_message_is_read = True
             await db.commit()
 
             await ws_manager.broadcast_to_admins({
@@ -1149,6 +1224,9 @@ async def send_message(
         print(f"[FLOOD] Rate limited, waiting {wait}s before retry", flush=True)
         await asyncio.sleep(wait)
         result = await _do_send()
+    # Mark this tg_msg_id as CRM-originated so the outgoing listener
+    # skips it without sleeping.
+    _mark_crm_sent(account_id, result.id)
     return result.id
 
 
@@ -1172,7 +1250,11 @@ async def send_media_group(
     )
     if not isinstance(results, list):
         results = [results]
-    return [getattr(r, 'id', None) or (r.get('id') if isinstance(r, dict) else 0) for r in results]
+    ids = [getattr(r, 'id', None) or (r.get('id') if isinstance(r, dict) else 0) for r in results]
+    for _id in ids:
+        if _id:
+            _mark_crm_sent(account_id, _id)
+    return ids
 
 
 async def forward_message(
@@ -1208,6 +1290,7 @@ async def forward_message(
             else:
                 continue
             sent_ids.append(result.id)
+            _mark_crm_sent(account_id, result.id)
         except Exception as e:
             print(f"[FORWARD] Failed to copy message {tg_msg_id}: {e}")
     return sent_ids
