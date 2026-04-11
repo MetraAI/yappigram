@@ -621,6 +621,7 @@ async def on_startup():
                 CREATE INDEX IF NOT EXISTS ix_staff_real_tg_id ON staff (real_tg_id);
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT false;
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT false;
+                ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_muted BOOLEAN NOT NULL DEFAULT false;
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS avatar_thumb TEXT;
                 -- Supports the contacts-list sort: pinned first, then by recency
                 CREATE INDEX IF NOT EXISTS ix_contacts_pin_recency
@@ -4081,6 +4082,28 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = None) -> int:
             # Sync archive + pin status from Telegram
             is_tg_archived = bool(getattr(dialog, "archived", False))
             is_tg_pinned = bool(getattr(dialog, "pinned", False))
+            # Mute state: Telethon exposes PeerNotifySettings.mute_until as a
+            # tz-aware `datetime` (NOT a unix int — `int(datetime)` raises).
+            # None means "inherit global default" — treat as unmuted. Telegram
+            # uses a far-future date (~year 2038) for "mute forever".
+            is_tg_muted = False
+            raw_dialog = getattr(dialog, "dialog", None)
+            ns = getattr(raw_dialog, "notify_settings", None) if raw_dialog else None
+            mute_until = getattr(ns, "mute_until", None) if ns else None
+            if mute_until is not None:
+                try:
+                    mute_ts = (
+                        mute_until.timestamp()
+                        if hasattr(mute_until, "timestamp")
+                        else float(mute_until)
+                    )
+                    if mute_ts > time.time():
+                        is_tg_muted = True
+                except (TypeError, ValueError, OverflowError):
+                    # OverflowError can fire on the "forever" sentinel on
+                    # platforms where datetime.timestamp() overflows — treat
+                    # as muted (the user did explicitly set it).
+                    is_tg_muted = True
             # Stripped JPEG thumbnail — tiny inline preview shown while the
             # full avatar loads. May be None for contacts without a profile photo.
             tg_thumb = extract_stripped_thumb(dialog.entity)
@@ -4096,6 +4119,11 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = None) -> int:
                 # (unlike archive, which the user can override in CRM).
                 if existing.is_pinned != is_tg_pinned:
                     existing.is_pinned = is_tg_pinned
+                    dirty = True
+
+                # Sync mute state — Telegram is the source of truth.
+                if existing.is_muted != is_tg_muted:
+                    existing.is_muted = is_tg_muted
                     dirty = True
 
                 # Sync archive: one-way, TG archived -> CRM archived, but do NOT
@@ -4176,6 +4204,7 @@ async def _do_sync_dialogs(account_id: UUID, limit: int | None = None) -> int:
                 approved_at=datetime.utcnow(),
                 last_message_at=last_msg_at,
                 is_pinned=is_tg_pinned,
+                is_muted=is_tg_muted,
                 avatar_thumb=tg_thumb,
             )
             db.add(contact)

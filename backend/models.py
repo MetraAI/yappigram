@@ -121,6 +121,13 @@ class Contact(Base):
     # every _do_sync_dialogs run.
     is_pinned = Column(Boolean, default=False, nullable=False)
 
+    # Mute state synced FROM Telegram. If the user muted this chat in the
+    # native Telegram client, we skip the in-CRM notification toast so the
+    # CRM doesn't alert on chats the user has already silenced elsewhere.
+    # Refreshed on every _do_sync_dialogs run from
+    # `dialog.notify_settings.mute_until > now`.
+    is_muted = Column(Boolean, default=False, nullable=False)
+
     # Telegram stripped profile thumbnail as a data URL (`data:image/jpeg;base64,...`).
     # ~700-1200 bytes, blurry 60x60 — shown instantly in the chat list while the
     # full avatar loads in the background. Refreshed on every _do_sync_dialogs

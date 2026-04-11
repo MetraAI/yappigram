@@ -292,8 +292,22 @@ const ContactItem = memo(function ContactItem({ contact, isSelected, isUnread, u
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className={`font-medium text-sm truncate ${isUnread ? "text-white" : ""}`}>{c.alias}</span>
+              {c.is_muted && (
+                <svg
+                  className="w-3.5 h-3.5 text-slate-500 shrink-0"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-label="Muted"
+                >
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M18.63 13A17.89 17.89 0 0 1 18 8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M18 8a6 6 0 0 0-9.33-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              )}
               {isUnread && (
-                <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-brand text-white text-[11px] font-bold flex items-center justify-center shrink-0">
+                <span className={`min-w-[20px] h-5 px-1.5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 ${c.is_muted ? "bg-slate-600" : "bg-brand"}`}>
                   {unreadCount > 99 ? "99+" : unreadCount}
                 </span>
               )}
@@ -874,10 +888,13 @@ function ChatsContent() {
             next.set(event.contact_id, (next.get(event.contact_id) || 0) + 1);
             return next;
           });
-          // Show notification toast — read alias from contactsRef (no nested setState)
+          // Show notification toast — read alias from contactsRef (no nested setState).
+          // Chats muted in Telegram don't trigger a toast here: `is_muted` is synced
+          // from `dialog.notify_settings.mute_until` on every sync cycle, so up to 2h
+          // after the user mutes a chat in their TG client the CRM will also go quiet.
           if (event.message?.content) {
             const contact = contactsRef.current.find((c) => c.id === event.contact_id);
-            if (contact) {
+            if (contact && !contact.is_muted) {
               setNotification({ alias: contact.alias, text: event.message.content.slice(0, 80) });
               setTimeout(() => setNotification(null), 4000);
             }

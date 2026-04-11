@@ -370,6 +370,7 @@ export interface Contact {
   real_tg_id: number | null;
   is_archived: boolean;
   is_pinned?: boolean;
+  is_muted?: boolean;
   avatar_thumb?: string | null;
   avatar_url?: string | null;
   created_at: string;
