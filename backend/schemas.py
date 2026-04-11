@@ -98,6 +98,7 @@ class ContactOut(BaseModel):
     is_archived: bool = False
     is_pinned: bool = False
     is_muted: bool = False
+    crm_muted: bool = False
     avatar_thumb: str | None = None
     avatar_url: str | None = None
     created_at: datetime

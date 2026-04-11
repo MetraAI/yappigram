@@ -622,6 +622,7 @@ async def on_startup():
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT false;
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT false;
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_muted BOOLEAN NOT NULL DEFAULT false;
+                ALTER TABLE contacts ADD COLUMN IF NOT EXISTS crm_muted BOOLEAN NOT NULL DEFAULT false;
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS avatar_thumb TEXT;
                 -- Supports the contacts-list sort: pinned first, then by recency
                 CREATE INDEX IF NOT EXISTS ix_contacts_pin_recency
@@ -3147,6 +3148,42 @@ async def unarchive_contact(contact_id: UUID, user: CurrentUser, db: DB):
     await db.commit()
     await cache_invalidate(f"contacts:{_org_id(user)}:*")
     return {"status": "unarchived"}
+
+
+@app.post("/api/contacts/{contact_id}/mute")
+async def mute_contact(contact_id: UUID, user: CurrentUser, db: DB):
+    """CRM-local mute toggle. Independent of Telegram's native mute.
+    Effective mute state (is_muted OR crm_muted) suppresses in-CRM toasts.
+    """
+    result = await db.execute(select(Contact).where(
+        Contact.id == contact_id,
+        Contact.tg_account_id.in_(_org_accounts_subq(user)),
+    ))
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    contact.crm_muted = True
+    await db.commit()
+    await cache_invalidate(f"contacts:{_org_id(user)}:*")
+    return {"status": "muted"}
+
+
+@app.post("/api/contacts/{contact_id}/unmute")
+async def unmute_contact(contact_id: UUID, user: CurrentUser, db: DB):
+    """Clear the CRM-local mute. Does NOT unmute in native Telegram —
+    `is_muted` stays whatever Telegram reports on the next sync cycle.
+    """
+    result = await db.execute(select(Contact).where(
+        Contact.id == contact_id,
+        Contact.tg_account_id.in_(_org_accounts_subq(user)),
+    ))
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    contact.crm_muted = False
+    await db.commit()
+    await cache_invalidate(f"contacts:{_org_id(user)}:*")
+    return {"status": "unmuted"}
 
 
 # ============================================================

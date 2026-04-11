@@ -371,6 +371,7 @@ export interface Contact {
   is_archived: boolean;
   is_pinned?: boolean;
   is_muted?: boolean;
+  crm_muted?: boolean;
   avatar_thumb?: string | null;
   avatar_url?: string | null;
   created_at: string;

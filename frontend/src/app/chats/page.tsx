@@ -292,7 +292,7 @@ const ContactItem = memo(function ContactItem({ contact, isSelected, isUnread, u
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className={`font-medium text-sm truncate ${isUnread ? "text-white" : ""}`}>{c.alias}</span>
-              {c.is_muted && (
+              {(c.is_muted || c.crm_muted) && (
                 <svg
                   className="w-3.5 h-3.5 text-slate-500 shrink-0"
                   viewBox="0 0 24 24"
@@ -307,7 +307,7 @@ const ContactItem = memo(function ContactItem({ contact, isSelected, isUnread, u
                 </svg>
               )}
               {isUnread && (
-                <span className={`min-w-[20px] h-5 px-1.5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 ${c.is_muted ? "bg-slate-600" : "bg-brand"}`}>
+                <span className={`min-w-[20px] h-5 px-1.5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 ${(c.is_muted || c.crm_muted) ? "bg-slate-600" : "bg-brand"}`}>
                   {unreadCount > 99 ? "99+" : unreadCount}
                 </span>
               )}
@@ -889,12 +889,11 @@ function ChatsContent() {
             return next;
           });
           // Show notification toast — read alias from contactsRef (no nested setState).
-          // Chats muted in Telegram don't trigger a toast here: `is_muted` is synced
-          // from `dialog.notify_settings.mute_until` on every sync cycle, so up to 2h
-          // after the user mutes a chat in their TG client the CRM will also go quiet.
+          // Effective mute = is_muted (synced from Telegram on every _do_sync_dialogs
+          // run) OR crm_muted (CRM-local toggle). Either one silences the toast.
           if (event.message?.content) {
             const contact = contactsRef.current.find((c) => c.id === event.contact_id);
-            if (contact && !contact.is_muted) {
+            if (contact && !contact.is_muted && !contact.crm_muted) {
               setNotification({ alias: contact.alias, text: event.message.content.slice(0, 80) });
               setTimeout(() => setNotification(null), 4000);
             }
@@ -1434,6 +1433,27 @@ function ChatsContent() {
     } catch (e: any) { console.error(e); }
   };
 
+  const toggleCrmMute = async (contactId: string) => {
+    const contact = contacts.find((c) => c.id === contactId);
+    if (!contact) return;
+    const nextMuted = !contact.crm_muted;
+    // Optimistic update
+    setContacts((prev) => prev.map((c) => c.id === contactId ? { ...c, crm_muted: nextMuted } : c));
+    if (selected?.id === contactId) {
+      setSelected((s) => s ? { ...s, crm_muted: nextMuted } : s);
+    }
+    try {
+      await api(`/api/contacts/${contactId}/${nextMuted ? "mute" : "unmute"}`, { method: "POST" });
+    } catch (e: any) {
+      // Revert on failure
+      setContacts((prev) => prev.map((c) => c.id === contactId ? { ...c, crm_muted: !nextMuted } : c));
+      if (selected?.id === contactId) {
+        setSelected((s) => s ? { ...s, crm_muted: !nextMuted } : s);
+      }
+      console.error(e);
+    }
+  };
+
   const filteredContacts = useMemo(() => contacts
     .filter((c) => {
       if (showArchived ? !c.is_archived : c.is_archived) return false;
@@ -1731,6 +1751,42 @@ function ChatsContent() {
                   <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" strokeLinecap="round" strokeLinejoin="round" />
                   <line x1="7" y1="7" x2="7.01" y2="7" />
                 </svg>
+              </button>
+
+              {/* CRM mute toggle. If the chat is already muted in Telegram
+                  (selected.is_muted), clicking this adds/removes a separate
+                  CRM-local mute. The effective mute is is_muted || crm_muted. */}
+              <button
+                onClick={() => toggleCrmMute(selected.id)}
+                className={`p-1.5 rounded-lg border transition-all duration-200 shrink-0 ${
+                  (selected.crm_muted || selected.is_muted)
+                    ? "bg-slate-500/10 border-slate-500/30 text-slate-400"
+                    : "border-surface-border text-slate-500 hover:text-slate-300 hover:border-slate-500/30"
+                }`}
+                title={
+                  selected.is_muted && selected.crm_muted
+                    ? "Замучен в Telegram и CRM (нажмите чтобы снять CRM-мьют)"
+                    : selected.is_muted
+                      ? "Замучен в Telegram (нажмите чтобы дополнительно замутить в CRM)"
+                      : selected.crm_muted
+                        ? "Включить уведомления в CRM"
+                        : "Отключить уведомления в CRM"
+                }
+              >
+                {(selected.crm_muted || selected.is_muted) ? (
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
+                    <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
+                    <path d="M18 8a6 6 0 0 0-9.33-5" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </svg>
+                )}
               </button>
 
               {/* Add member (groups only) */}

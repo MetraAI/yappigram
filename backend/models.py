@@ -128,6 +128,12 @@ class Contact(Base):
     # `dialog.notify_settings.mute_until > now`.
     is_muted = Column(Boolean, default=False, nullable=False)
 
+    # CRM-local mute toggle. Independent of `is_muted` (which is TG-synced).
+    # Lets operators silence a chat inside the CRM without touching the
+    # Telegram client. The effective mute state for notification/icon
+    # purposes is `is_muted OR crm_muted`.
+    crm_muted = Column(Boolean, default=False, nullable=False)
+
     # Telegram stripped profile thumbnail as a data URL (`data:image/jpeg;base64,...`).
     # ~700-1200 bytes, blurry 60x60 — shown instantly in the chat list while the
     # full avatar loads in the background. Refreshed on every _do_sync_dialogs
