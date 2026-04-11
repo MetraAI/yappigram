@@ -2024,18 +2024,46 @@ function ChatsContent() {
                     const isFirst = albumMsgs[0]?.id === m.id;
                     if (!isFirst) return <div style={{ height: 0, overflow: "hidden" }} />;
                     const albumCaption = albumMsgs.find((am: any) => am.content)?.content;
+                    // Telegram-style album layouts. count >= 2:
+                    //   2 → 2 cols
+                    //   3 → first full width on top, 2 below (2-col grid)
+                    //   4 → 2x2
+                    //   5 → 2 big on top, 3 small below (6-col grid, spans 3/3 then 2/2/2)
+                    //   6 → 3x2 (3-col grid)
+                    //   7-10 → 3-col grid; last item spans full row if leftover is 1
+                    const count = albumMsgs.length;
+                    const gridCols =
+                      count === 1 ? "grid-cols-1" :
+                      count === 5 ? "grid-cols-6" :
+                      count === 8 ? "grid-cols-4" :
+                      count >= 6  ? "grid-cols-3" :
+                                    "grid-cols-2";
+                    const itemSpan = (i: number): string => {
+                      if (count === 3 && i === 0) return "col-span-2";
+                      if (count === 5) return i < 2 ? "col-span-3" : "col-span-2";
+                      // 7 photos in a 3-col grid leaves 1 lonely photo on the
+                      // bottom row — stretch it to full width so it doesn't
+                      // float awkwardly next to empty space.
+                      if (count === 7 && i === 6) return "col-span-3";
+                      // 10 → 3x3 + 1 → same stretch
+                      if (count === 10 && i === 9) return "col-span-3";
+                      return "";
+                    };
+                    // Bigger cap for multi-photo albums so 3-col layouts
+                    // actually breathe; single photo stays tight.
+                    const maxW = count === 1 ? "max-w-[360px]" : "max-w-[480px]";
                     return (
                       <div className="px-4 py-1">
                         <div className="flex items-start gap-2">
-                          <div className={`max-w-[320px] ${m.direction === "outgoing" ? "ml-auto" : ""}`}>
+                          <div className={`${maxW} ${m.direction === "outgoing" ? "ml-auto" : ""}`}>
                             <div className={`rounded-2xl overflow-hidden ${m.direction === "outgoing" ? "bg-brand" : "bg-surface-card border border-surface-border"}`}>
-                              <div className={`grid ${albumMsgs.length === 1 ? "grid-cols-1" : "grid-cols-2"} gap-0.5`}>
-                                {albumMsgs.map((am: any) => (
-                                  <div key={am.id} className={`overflow-hidden ${albumMsgs.length === 3 && am === albumMsgs[0] ? "col-span-2" : ""}`}>
+                              <div className={`grid ${gridCols} gap-[2px]`}>
+                                {albumMsgs.map((am: any, i: number) => (
+                                  <div key={am.id} className={`overflow-hidden ${itemSpan(i)}`}>
                                     {am.media_type === "video" ? (
-                                      <video src={mediaUrl(am.media_path)} controls preload="none" className="w-full aspect-square object-cover" />
+                                      <video src={mediaUrl(am.media_path)} controls preload="none" className="w-full h-full aspect-square object-cover" />
                                     ) : (
-                                      <img src={mediaUrl(am.media_path)} alt="" loading="lazy" className="w-full aspect-square object-cover cursor-pointer hover:opacity-90"
+                                      <img src={mediaUrl(am.media_path)} alt="" loading="lazy" className="w-full h-full aspect-square object-cover cursor-pointer hover:opacity-90"
                                         onClick={() => setLightboxSrc(mediaUrl(am.media_path))} />
                                     )}
                                   </div>
