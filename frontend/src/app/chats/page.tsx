@@ -688,6 +688,15 @@ function ChatsContent() {
   // Tag filter
   const [filterTag, setFilterTag] = useState<string | null>(null);
 
+  // Optional date/time filter — show only chats whose last message landed
+  // inside this window. Lets the operator narrow the list to e.g.
+  // "chats active today between 9:00 and 18:00". Empty = no restriction.
+  const [dateFilterOpen, setDateFilterOpen] = useState(false);
+  const [dateFromFilter, setDateFromFilter] = useState("");
+  const [dateToFilter, setDateToFilter] = useState("");
+  const [timeFromFilter, setTimeFromFilter] = useState("");
+  const [timeToFilter, setTimeToFilter] = useState("");
+
   // Emoji picker
   const [showEmoji, setShowEmoji] = useState(false);
 
@@ -1610,11 +1619,39 @@ function ChatsContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drafts.size, Array.from(drafts.keys()).join("|")]);
 
+  // Pre-compute the date filter bounds (UTC ms). If the inputs produce
+  // an invalid date we skip the filter entirely rather than hiding
+  // everything, so a half-filled form doesn't blank the chat list.
+  const dateFilterBounds = useMemo(() => {
+    const parse = (dateStr: string, timeStr: string, endOfDay: boolean): number | null => {
+      if (!dateStr) return null;
+      const time = timeStr || (endOfDay ? "23:59:59" : "00:00:00");
+      // Treat inputs as local-time — same as how <input type=date> renders.
+      const d = new Date(`${dateStr}T${time}`);
+      const t = d.getTime();
+      return Number.isFinite(t) ? t : null;
+    };
+    return {
+      from: parse(dateFromFilter, timeFromFilter, false),
+      to: parse(dateToFilter, timeToFilter, true),
+    };
+  }, [dateFromFilter, dateToFilter, timeFromFilter, timeToFilter]);
+  const dateFilterActive = dateFilterBounds.from !== null || dateFilterBounds.to !== null;
+
   const filteredContacts = useMemo(() => contacts
     .filter((c) => {
       if (showArchived ? !c.is_archived : c.is_archived) return false;
       if (search && !c.alias.toLowerCase().includes(search.toLowerCase())) return false;
       if (filterTag && !c.tags.includes(filterTag)) return false;
+      // Date range filter — matches against last_message_at. A chat with
+      // no messages is excluded when the filter is active.
+      if (dateFilterActive) {
+        if (!c.last_message_at) return false;
+        const t = new Date(c.last_message_at + (c.last_message_at.endsWith("Z") ? "" : "Z")).getTime();
+        if (!Number.isFinite(t)) return false;
+        if (dateFilterBounds.from !== null && t < dateFilterBounds.from) return false;
+        if (dateFilterBounds.to !== null && t > dateFilterBounds.to) return false;
+      }
       return true;
     })
     .sort((a, b) => {
@@ -1626,7 +1663,7 @@ function ChatsContent() {
       const aDate = a.last_message_at || a.created_at || "";
       const bDate = b.last_message_at || b.created_at || "";
       return bDate.localeCompare(aDate);
-    }), [contacts, showArchived, search, filterTag, pinned, draftIds]);
+    }), [contacts, showArchived, search, filterTag, pinned, draftIds, dateFilterActive, dateFilterBounds]);
 
   // Pre-compute album groups for message rendering (O(n) instead of O(n²))
   const albumMap = useMemo(() => {
@@ -1757,7 +1794,7 @@ function ChatsContent() {
             </div>
           )}
 
-          {/* Filter bar: archive toggle + tag filter */}
+          {/* Filter bar: archive toggle + date filter + tag filter */}
           <div className="flex items-center gap-1.5 px-4 pt-1 pb-2 overflow-x-auto flex-nowrap" style={{ scrollbarWidth: "thin" }}>
             <button
               onClick={() => setShowArchived(!showArchived)}
@@ -1769,6 +1806,82 @@ function ChatsContent() {
             >
               {showArchived ? "◀ Чаты" : "Архив"}
             </button>
+            <div className="relative shrink-0">
+              <button
+                onClick={() => setDateFilterOpen((v) => !v)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all flex items-center gap-1 ${
+                  dateFilterActive
+                    ? "bg-brand/10 border-brand/30 text-brand"
+                    : "border-surface-border text-slate-500 hover:text-brand"
+                }`}
+                title="Фильтр по дате и времени"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
+                </svg>
+                Дата
+                {dateFilterActive && <span className="ml-0.5">●</span>}
+              </button>
+              {dateFilterOpen && (
+                <div className="absolute left-0 top-full mt-1 z-20 w-72 bg-surface-card border border-surface-border rounded-xl p-3 shadow-xl space-y-2.5 animate-fade-in">
+                  <div className="text-[11px] font-medium text-slate-400 mb-0.5">Фильтр по дате сообщения</div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 block mb-1">От</label>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="date"
+                        value={dateFromFilter}
+                        onChange={(e) => setDateFromFilter(e.target.value)}
+                        className="flex-1 bg-surface border border-surface-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-brand/50 text-slate-300"
+                      />
+                      <input
+                        type="time"
+                        value={timeFromFilter}
+                        onChange={(e) => setTimeFromFilter(e.target.value)}
+                        placeholder="00:00"
+                        className="w-20 bg-surface border border-surface-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-brand/50 text-slate-300"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 block mb-1">До</label>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="date"
+                        value={dateToFilter}
+                        onChange={(e) => setDateToFilter(e.target.value)}
+                        className="flex-1 bg-surface border border-surface-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-brand/50 text-slate-300"
+                      />
+                      <input
+                        type="time"
+                        value={timeToFilter}
+                        onChange={(e) => setTimeToFilter(e.target.value)}
+                        placeholder="23:59"
+                        className="w-20 bg-surface border border-surface-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-brand/50 text-slate-300"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-center pt-1">
+                    <button
+                      onClick={() => {
+                        setDateFromFilter(""); setDateToFilter("");
+                        setTimeFromFilter(""); setTimeToFilter("");
+                      }}
+                      className="text-[10px] text-slate-500 hover:text-slate-300"
+                      disabled={!dateFilterActive}
+                    >
+                      Сбросить
+                    </button>
+                    <button
+                      onClick={() => setDateFilterOpen(false)}
+                      className="text-[10px] text-brand hover:text-brand/80 font-medium"
+                    >
+                      Готово
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
             {allTags.map((tag) => (
               <button
                 key={tag.id}
