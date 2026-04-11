@@ -3477,8 +3477,34 @@ async def start_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
     if bc.status not in ("draft", "paused"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Cannot start from status {bc.status}")
 
-    # Build recipient list
+    # Per-account lock: at most one running broadcast per tg_account at any time.
+    # Two parallel broadcasts on the same TG account double the send rate and
+    # significantly raise the risk of a flood ban. Run them sequentially.
+    # Held inside the same transaction (with_for_update on the row above) so
+    # two concurrent start requests can't both pass this check.
+    running_q = await db.execute(
+        select(Broadcast.id, Broadcast.title).where(
+            Broadcast.tg_account_id == bc.tg_account_id,
+            Broadcast.status == "running",
+            Broadcast.id != bc.id,
+        )
+    )
+    running = running_q.first()
+    if running:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f'На этом TG-аккаунте уже идёт другая рассылка: "{running[1] or running[0]}". '
+            f"Дождитесь её завершения или поставьте на паузу.",
+        )
+
+    # Build recipient list with diagnostic counts so the user understands WHY
+    # it's empty when it's empty.
     import random as _random
+    base_filter = (
+        Contact.tg_account_id == bc.tg_account_id,
+        Contact.chat_type == "private",
+    )
+
     if bc.contact_ids:
         # Manual selection — use specified contacts (private only)
         # Validate all contact_ids belong to user's org
@@ -3486,18 +3512,16 @@ async def start_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
             select(Contact).where(
                 Contact.id.in_(bc.contact_ids),
                 Contact.tg_account_id.in_(_org_accounts_subq(user)),
-                Contact.tg_account_id == bc.tg_account_id,
+                *base_filter,
                 Contact.status == "approved",
-                Contact.chat_type == "private",
                 Contact.is_archived.is_(False),
             )
         )
         contacts = list(result.scalars().all())
     else:
         q = select(Contact).where(
-            Contact.tg_account_id == bc.tg_account_id,
+            *base_filter,
             Contact.status == "approved",
-            Contact.chat_type == "private",
             Contact.is_archived.is_(False),
         )
         if bc.tag_filter:
@@ -3510,7 +3534,38 @@ async def start_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
         contacts = _random.sample(contacts, bc.max_recipients)
 
     if not contacts:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No matching recipients")
+        # Diagnose why it's empty so the user gets actionable feedback,
+        # not just "No matching recipients".
+        total_in_account = (await db.execute(
+            select(func.count()).select_from(Contact).where(*base_filter)
+        )).scalar_one() or 0
+        approved_count = (await db.execute(
+            select(func.count()).select_from(Contact).where(
+                *base_filter, Contact.status == "approved", Contact.is_archived.is_(False),
+            )
+        )).scalar_one() or 0
+
+        if bc.contact_ids:
+            reason = (
+                f"Из {len(bc.contact_ids)} выбранных вручную контактов ни один не подходит "
+                f"(не approved, в архиве, не private или удалён)."
+            )
+        elif bc.tag_filter:
+            reason = (
+                f"Ни один из {approved_count} активных контактов аккаунта не имеет нужных тегов "
+                f"({', '.join(bc.tag_filter)})."
+            )
+        elif total_in_account == 0:
+            reason = "У этого TG-аккаунта вообще нет контактов. Сначала синхронизируйте диалоги."
+        elif approved_count == 0:
+            reason = (
+                f"В аккаунте {total_in_account} контактов, но ни один не помечен как approved "
+                f"(все в архиве/blocked/pending)."
+            )
+        else:
+            reason = f"В аккаунте {approved_count} активных контактов, но фильтр их отсеял."
+
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Получателей не найдено. {reason}")
 
     # Create recipients (clear old if restarting)
     if bc.status == "draft":
