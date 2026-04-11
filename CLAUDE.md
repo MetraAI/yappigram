@@ -10,42 +10,45 @@ Telegram CRM embedded in PostForge via iframe. This repo contains CRM backend + 
 
 ## Production Server
 
-**Host**: `metra@144.31.234.105` (SSH key auth)
+**Host**: `root@82.25.60.99` (SSH key auth)
+**Path**: `/opt/yappigram/`
+**URL**: `crm.metra-ai.org` (CRM is standalone — NOT a profile of PostForge's compose)
 
 ### CRITICAL: How CRM is deployed
 
-CRM containers are NOT managed by this repo's docker-compose.yml. They are defined in **PostForge's** `metraAi/docker-compose.yml` under `profile: crm`, with build context `../yappigram/`.
+CRM is a fully standalone deployment on a **different server** than PostForge. Its own `docker-compose.prod.yml`, own Postgres, own Redis, own nginx. **Must NOT run alongside PostForge containers on `144.31.234.105`** — that server hosts `crm.metra-ai.org` DNS pointed elsewhere and mixing them causes cross-user token leakage.
 
 ```bash
-# Deploy CRM (from server):
-cd ~/yappigram && git pull origin main
-cd ~/metraAi && docker compose --profile crm up -d --build crm-backend crm-frontend
+# Deploy (from laptop):
+ssh root@82.25.60.99
+cd /opt/yappigram && git pull origin main
+docker compose -f docker-compose.prod.yml up -d --build backend frontend
 
 # Deploy only backend:
-cd ~/metraAi && docker compose --profile crm up -d --build crm-backend
+docker compose -f docker-compose.prod.yml up -d --build backend
 
-# Deploy only frontend:
-cd ~/metraAi && docker compose --profile crm up -d --build crm-frontend
-
-# Force rebuild (no Docker cache):
-cd ~/metraAi && docker compose --profile crm build --no-cache crm-frontend
-docker compose --profile crm up -d crm-frontend
+# Deploy only frontend (Next.js, ~3 min build):
+docker compose -f docker-compose.prod.yml up -d --build frontend
 
 # View logs:
-docker logs postforge-crm-backend --tail 50
-docker logs postforge-crm-frontend --tail 20
+docker compose -f docker-compose.prod.yml logs backend --tail 50
+docker compose -f docker-compose.prod.yml logs frontend --tail 20
 
 # CRM database:
-docker exec postforge-crm-db psql -U tgcrm -d tgcrm
+docker exec -it yappigram-db-1 psql -U tgcrm -d tgcrm
 ```
 
+**GitHub fetch occasionally fails with "Recv failure: Connection reset by peer"** from this host — retry `git pull` 2–3 times with a small sleep and it succeeds.
+
 ### Container names
-| Container | Port | Purpose |
-|---|---|---|
-| `postforge-crm-backend` | 8100 | CRM FastAPI backend |
-| `postforge-crm-frontend` | 3100 | CRM Next.js frontend |
-| `postforge-crm-db` | internal | PostgreSQL (tgcrm) |
-| `postforge-crm-redis` | internal | Redis |
+| Container | Purpose |
+|---|---|
+| `yappigram-backend-1` | CRM FastAPI backend |
+| `yappigram-frontend-1` | CRM Next.js frontend |
+| `yappigram-db-1` | PostgreSQL (tgcrm) |
+| `yappigram-redis-1` | Redis |
+| `yappigram-nginx-1` | Nginx reverse proxy |
+| `yappigram-certbot-1` | Let's Encrypt renewal |
 
 ## Architecture
 
@@ -89,9 +92,18 @@ PostForge (metra-ai.org)
 - **Contact** — TG chat entity (private/group/supergroup/channel), has alias, real_name_encrypted, tags, is_archived
 - **Message** — individual message with direction, content, media, reply, forward, sticker support
 - **ScheduledMessage** — pending/sent/cancelled, stores scheduled_at (UTC naive), timezone, content
-- **TgAccount** — connected Telegram account, is_active, disconnected_at for soft-delete
-- **Staff** — CRM user linked to PostForge org via SSO
+- **TgAccount** — connected Telegram account, is_active, disconnected_at for soft-delete. Field is `connected_at` (NOT `created_at`) — admin endpoints must use the right name.
+- **Staff** — CRM user linked to PostForge org via SSO. Uniqueness is `(postforge_user_id, postforge_org_id)`. **Personal workspace is blocked** — see below.
 - **Tag**, **MessageTemplate**, **PinnedChat**, **Broadcast**
+
+### CRM is team-only (important)
+- Both `/api/auth/sso` and `/api/auth/tg` **reject users without a PostForge team org**:
+  ```json
+  HTTP 403 {"detail": {"code": "team_required", "message": "CRM доступен только для команд..."}}
+  ```
+- PostForge frontend detects this code and shows `CrmTeamRequiredGate` with a button to `/team` (create/switch org).
+- `personal_{pf_user_id}` Staff rows are **never** created on login anymore. Any pre-existing ones were deactivated in a one-off cleanup.
+- The `tg_auth` endpoint still has a break-glass bootstrap for `TG_ADMIN_CHAT_ID` that creates a `personal_admin_{tg_id}` Staff — that's intentional for the very first admin onboarding and is harmless.
 
 ### API highlights
 - `POST /api/messages/{contact_id}/send` — send text message
