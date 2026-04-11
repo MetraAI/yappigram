@@ -681,6 +681,7 @@ export interface Broadcast {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  last_error: string | null;
 }
 
 export async function getBroadcasts(): Promise<Broadcast[]> {

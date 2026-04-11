@@ -292,10 +292,14 @@ class Broadcast(Base):
     delay_seconds = Column(Integer, default=1)  # 1s to 3600s
 
     # Status
-    status = Column(String, default="draft")  # draft | running | paused | completed | cancelled
+    status = Column(String, default="draft")  # draft | running | paused | completed | cancelled | failed
     total_recipients = Column(Integer, default=0)
     sent_count = Column(Integer, default=0)
     failed_count = Column(Integer, default=0)
+    # Last error message — set on catastrophic failure (whole task crashed)
+    # OR updated to the most recent per-recipient failure so the user can see
+    # what's happening without opening every recipient row.
+    last_error = Column(Text, nullable=True)
 
     created_by = Column(UUID(as_uuid=True), ForeignKey("staff.id"), nullable=True)
     org_id = Column(String, nullable=True, index=True)

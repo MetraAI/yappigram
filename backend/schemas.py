@@ -289,6 +289,7 @@ class BroadcastOut(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    last_error: str | None = None
 
     model_config = {"from_attributes": True}
 

@@ -622,6 +622,7 @@ async def on_startup():
                 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT false;
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS max_recipients INTEGER;
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS contact_ids UUID[] DEFAULT '{}';
+                ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS last_error TEXT;
                 -- org_id columns for multi-tenancy
                 ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS org_id VARCHAR;
                 ALTER TABLE tags ADD COLUMN IF NOT EXISTS org_id VARCHAR;
@@ -3648,29 +3649,50 @@ async def delete_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
 
 
 async def _run_broadcast(broadcast_id: UUID):
-    """Background task to send broadcast messages with delay."""
+    """Background task to send broadcast messages with delay.
+
+    Wrapped in a top-level try/except: catastrophic failures (lost DB
+    connection, Telethon client gone, etc.) mark the broadcast as
+    `failed` with the error stored in `last_error`, instead of leaving
+    it stuck in `running` forever with no diagnostic.
+    """
     from models import async_session
-    async with async_session() as db:
-        result = await db.execute(select(Broadcast).where(Broadcast.id == broadcast_id))
-        bc = result.scalar_one_or_none()
-        if not bc:
-            return
+    try:
+        async with async_session() as db:
+            result = await db.execute(select(Broadcast).where(Broadcast.id == broadcast_id))
+            bc = result.scalar_one_or_none()
+            if not bc:
+                return
 
-        result = await db.execute(
-            select(BroadcastRecipient)
-            .where(BroadcastRecipient.broadcast_id == broadcast_id, BroadcastRecipient.status == "pending")
-        )
-        recipients = result.scalars().all()
+            result = await db.execute(
+                select(BroadcastRecipient)
+                .where(BroadcastRecipient.broadcast_id == broadcast_id, BroadcastRecipient.status == "pending")
+            )
+            recipients = result.scalars().all()
 
-        # Warm up Telethon entity cache by iterating dialogs once.
-        # Without this, send_message(user_id) fails with "Could not find the input entity for
-        # PeerUser(...)" when the user is in the contacts table but their access_hash is not in
-        # the current SQLite session (happens after re-login or when the contact was added via
-        # a different code path). iter_dialogs() forces Telethon to fetch and cache access_hash
-        # for every dialog the account currently has.
-        from telegram import _clients as _tg_clients
-        _client = _tg_clients.get(bc.tg_account_id)
-        if _client:
+            # Warm up Telethon entity cache by iterating dialogs once.
+            # Without this, send_message(user_id) fails with "Could not find the input entity for
+            # PeerUser(...)" when the user is in the contacts table but their access_hash is not in
+            # the current SQLite session (happens after re-login or when the contact was added via
+            # a different code path). iter_dialogs() forces Telethon to fetch and cache access_hash
+            # for every dialog the account currently has.
+            from telegram import _clients as _tg_clients
+            _client = _tg_clients.get(bc.tg_account_id)
+            if not _client:
+                bc.status = "failed"
+                bc.last_error = (
+                    "TG-аккаунт не подключён к серверу. "
+                    "Откройте Настройки → TG аккаунты и переподключите."
+                )
+                await db.commit()
+                await ws_manager.broadcast_to_admins({
+                    "type": "broadcast_status",
+                    "broadcast_id": str(broadcast_id),
+                    "status": "failed",
+                    "last_error": bc.last_error,
+                }, org_id=bc.org_id)
+                return
+
             try:
                 _warmed = 0
                 async for _ in _client.iter_dialogs(limit=None):
@@ -3679,83 +3701,114 @@ async def _run_broadcast(broadcast_id: UUID):
             except Exception as _warm_err:
                 print(f"[BROADCAST {broadcast_id}] Warm-up failed: {_warm_err}", flush=True)
 
-        for recip in recipients:
-            # Check if paused/cancelled
-            await db.refresh(bc)
-            if bc.status != "running":
-                return
+            for recip in recipients:
+                # Check if paused/cancelled
+                await db.refresh(bc)
+                if bc.status != "running":
+                    return
 
-            # Get contact
-            result = await db.execute(select(Contact).where(Contact.id == recip.contact_id))
-            contact = result.scalar_one_or_none()
-            if not contact:
-                recip.status = "failed"
-                recip.error = "Contact not found"
-                bc.failed_count += 1
+                # Get contact
+                result = await db.execute(select(Contact).where(Contact.id == recip.contact_id))
+                contact = result.scalar_one_or_none()
+                if not contact:
+                    recip.status = "failed"
+                    recip.error = "Контакт не найден"
+                    bc.failed_count += 1
+                    bc.last_error = "Контакт не найден (был удалён после создания рассылки)"
+                    await db.commit()
+                    continue
+
+                try:
+                    # Throttle broadcast sends to stay below Telegram flood
+                    # thresholds. Unlike manual send endpoints (which raise
+                    # 429), broadcasts sleep until a slot frees up.
+                    await wait_tg_send_slot(str(bc.tg_account_id), contact.real_tg_id)
+
+                    file_path = os.path.join(MEDIA_DIR, bc.media_path) if bc.media_path else None
+                    tg_msg_id = await send_message(
+                        bc.tg_account_id,
+                        contact.real_tg_id,
+                        text=bc.content,
+                        file_path=file_path,
+                        media_type=bc.media_type,
+                    )
+
+                    # Save message to DB so it shows in chat
+                    msg = Message(
+                        contact_id=contact.id,
+                        tg_message_id=tg_msg_id,
+                        direction="outgoing",
+                        content=bc.content,
+                        media_type=bc.media_type,
+                        media_path=bc.media_path,
+                        sent_by=bc.created_by,
+                    )
+                    db.add(msg)
+                    contact.last_message_at = datetime.utcnow()
+
+                    recip.status = "sent"
+                    recip.sent_at = datetime.utcnow()
+                    bc.sent_count += 1
+                except Exception as e:
+                    err_str = str(e)[:500]
+                    recip.status = "failed"
+                    recip.error = err_str
+                    bc.failed_count += 1
+                    # Surface most-recent error on the broadcast itself so the
+                    # user sees what's going wrong without opening every recipient.
+                    bc.last_error = f"{contact.alias or contact.real_tg_id}: {err_str}"
+                    print(f"[BROADCAST {broadcast_id}] Send failed for {contact.real_tg_id}: {err_str}", flush=True)
+
                 await db.commit()
-                continue
 
-            try:
-                # Throttle broadcast sends to stay below Telegram flood
-                # thresholds. Unlike manual send endpoints (which raise
-                # 429), broadcasts sleep until a slot frees up.
-                await wait_tg_send_slot(str(bc.tg_account_id), contact.real_tg_id)
+                # Broadcast progress via WS
+                await ws_manager.broadcast_to_admins({
+                    "type": "broadcast_progress",
+                    "broadcast_id": str(broadcast_id),
+                    "sent": bc.sent_count,
+                    "failed": bc.failed_count,
+                    "total": bc.total_recipients,
+                    "last_error": bc.last_error,
+                }, org_id=bc.org_id)
 
-                file_path = os.path.join(MEDIA_DIR, bc.media_path) if bc.media_path else None
-                tg_msg_id = await send_message(
-                    bc.tg_account_id,
-                    contact.real_tg_id,
-                    text=bc.content,
-                    file_path=file_path,
-                    media_type=bc.media_type,
-                )
+                # Delay between sends
+                await asyncio.sleep(bc.delay_seconds)
 
-                # Save message to DB so it shows in chat
-                msg = Message(
-                    contact_id=contact.id,
-                    tg_message_id=tg_msg_id,
-                    direction="outgoing",
-                    content=bc.content,
-                    media_type=bc.media_type,
-                    media_path=bc.media_path,
-                    sent_by=bc.created_by,
-                )
-                db.add(msg)
-                contact.last_message_at = datetime.utcnow()
-
-                recip.status = "sent"
-                recip.sent_at = datetime.utcnow()
-                bc.sent_count += 1
-            except Exception as e:
-                recip.status = "failed"
-                recip.error = str(e)[:500]
-                bc.failed_count += 1
-
-            await db.commit()
-
-            # Broadcast progress via WS
-            await ws_manager.broadcast_to_admins({
-                "type": "broadcast_progress",
-                "broadcast_id": str(broadcast_id),
-                "sent": bc.sent_count,
-                "failed": bc.failed_count,
-                "total": bc.total_recipients,
-            }, org_id=bc.org_id)
-
-            # Delay between sends
-            await asyncio.sleep(bc.delay_seconds)
-
-        # Mark completed
-        await db.refresh(bc)
-        if bc.status == "running":
-            bc.status = "completed"
-            bc.completed_at = datetime.utcnow()
-            await db.commit()
-            await ws_manager.broadcast_to_admins({
-                "type": "broadcast_status",
-                "broadcast_id": str(broadcast_id),
-                "status": "completed",
-            }, org_id=bc.org_id)
+            # Mark completed
+            await db.refresh(bc)
+            if bc.status == "running":
+                bc.status = "completed"
+                bc.completed_at = datetime.utcnow()
+                await db.commit()
+                await ws_manager.broadcast_to_admins({
+                    "type": "broadcast_status",
+                    "broadcast_id": str(broadcast_id),
+                    "status": "completed",
+                }, org_id=bc.org_id)
+    except Exception as e:
+        # Catastrophic failure: lost DB, telethon disconnect, etc.
+        # Mark broadcast as failed and surface the error so it doesn't
+        # stay stuck in "running" with no diagnostic.
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[BROADCAST {broadcast_id}] Catastrophic failure: {e}\n{tb}", flush=True)
+        try:
+            from models import async_session as _ses
+            async with _ses() as _db:
+                _r = await _db.execute(select(Broadcast).where(Broadcast.id == broadcast_id))
+                _bc = _r.scalar_one_or_none()
+                if _bc:
+                    _bc.status = "failed"
+                    _bc.last_error = f"Сбой фоновой задачи: {str(e)[:480]}"
+                    await _db.commit()
+                    await ws_manager.broadcast_to_admins({
+                        "type": "broadcast_status",
+                        "broadcast_id": str(broadcast_id),
+                        "status": "failed",
+                        "last_error": _bc.last_error,
+                    }, org_id=_bc.org_id)
+        except Exception as _post_err:
+            print(f"[BROADCAST {broadcast_id}] Failed to mark broadcast failed: {_post_err}", flush=True)
 
 
 # ============================================================

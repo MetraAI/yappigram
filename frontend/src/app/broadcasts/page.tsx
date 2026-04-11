@@ -194,11 +194,11 @@ function BroadcastsContent() {
 
   const statusColor: Record<string, string> = {
     draft: "text-slate-400", running: "text-emerald-400", paused: "text-amber-400",
-    completed: "text-brand", cancelled: "text-red-400",
+    completed: "text-brand", cancelled: "text-red-400", failed: "text-red-500",
   };
   const statusLabel: Record<string, string> = {
     draft: "Черновик", running: "Отправка", paused: "Пауза",
-    completed: "Завершено", cancelled: "Отменено",
+    completed: "Завершено", cancelled: "Отменено", failed: "Сбой",
   };
 
   const privateContacts = contacts.filter((c) => c.chat_type === "private" && !c.is_archived);
@@ -462,6 +462,18 @@ function BroadcastsContent() {
                   {bc.tag_filter.map((t) => (
                     <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-slate-400">{t}</span>
                   ))}
+                </div>
+              )}
+              {bc.last_error && (
+                <div className={`mt-2 px-2 py-1.5 rounded text-[11px] border ${
+                  bc.status === "failed"
+                    ? "bg-red-500/10 border-red-500/30 text-red-300"
+                    : "bg-amber-500/10 border-amber-500/30 text-amber-300"
+                }`}>
+                  <div className="font-medium mb-0.5">
+                    {bc.status === "failed" ? "Рассылка остановлена с ошибкой:" : "Последняя ошибка отправки:"}
+                  </div>
+                  <div className="break-words">{bc.last_error}</div>
                 </div>
               )}
               <div className="text-[10px] text-slate-600 mt-2">
