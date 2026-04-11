@@ -4623,7 +4623,7 @@ async def admin_all_accounts(user: CrmAdminUser, db: DB):
             "display_name": acc.display_name,
             "org_id": acc.org_id,
             "connected": bool(client and client.is_connected()),
-            "created_at": acc.created_at.isoformat() if acc.created_at else None,
+            "connected_at": acc.connected_at.isoformat() if acc.connected_at else None,
             "disconnected_at": acc.disconnected_at.isoformat() if acc.disconnected_at else None,
         })
 
