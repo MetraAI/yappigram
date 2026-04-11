@@ -838,16 +838,14 @@ async def tg_auth(req: TgAuthRequest, request: Request, db: DB):
                 pf_nickname = pf_data.get("nickname") or tg_user.get("first_name", "User")
                 pf_orgs = pf_data.get("organizations", [])
 
-                # Build list of org_ids to link.
-                # If user has team org(s), use ONLY those — do NOT auto-create a personal
-                # workspace alongside teams. Personal is created only for solo users (no team).
-                # This avoids the bug where a deactivated personal Staff (left over from a
-                # personal→team migration) gets silently re-created on every TG login, ending
-                # up as a duplicate workspace the user can pick by mistake.
-                if pf_orgs:
-                    org_contexts = [str(org["id"]) for org in pf_orgs]
-                else:
-                    org_contexts = [f"personal_{pf_user_id}"]
+                # CRM is team-only. Solo users (no team org) cannot auto-provision
+                # a personal workspace here — they must create a team in METRA AI first.
+                if not pf_orgs:
+                    raise HTTPException(
+                        status.HTTP_403_FORBIDDEN,
+                        detail={"code": "team_required", "message": "CRM доступен только для команд. Создайте команду в METRA AI."},
+                    )
+                org_contexts = [str(org["id"]) for org in pf_orgs]
 
                 # For each context: find existing staff or create new.
                 # IMPORTANT: only consider active staff. Deactivated rows are intentional
@@ -912,6 +910,9 @@ async def tg_auth(req: TgAuthRequest, request: Request, db: DB):
                     await db.commit()
                     for s in all_staff:
                         await db.refresh(s)
+        except HTTPException:
+            # Re-raise our own auth errors (e.g. team_required) — don't swallow them.
+            raise
         except Exception as e:
             import traceback
             print(f"[TG_AUTH] PostForge lookup failed: {e}")
@@ -1081,22 +1082,26 @@ async def sso_auth(req: SsoAuthRequest, request: Request, db: DB):
     pf_beta_features = pf_user.get("beta_features") or []
     is_crm_admin = "crm_admin" in pf_beta_features
 
+    # CRM is team-only: block anyone not currently in a team context.
+    # Frontend detects the "team_required" code and shows a "create team" modal.
+    if not pf_org_id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail={"code": "team_required", "message": "CRM доступен только для команд. Создайте команду в METRA AI."},
+        )
+
     import hashlib
-    # Effective org_id: team UUID or "personal_{user_id}" for solo
-    effective_org_id = str(pf_org_id) if pf_org_id else f"personal_{pf_user_id}"
+    effective_org_id = str(pf_org_id)
     import logging
     logging.info(f"[SSO] user={pf_user_id} pf_org_id={pf_org_id} effective_org_id={effective_org_id} pf_org_role={pf_org_role}")
     # Unique tg_user_id per org context (hash of user_id + org_id)
     synthetic_tg_id = int(hashlib.sha256(f"{pf_user_id}:{effective_org_id}".encode()).hexdigest()[:15], 16)
 
-    # Determine CRM role based on PostForge context:
-    # - Personal (solo) mode → super_admin (full control of own CRM)
+    # Determine CRM role based on PostForge team context:
     # - Team owner → super_admin
     # - Team admin → admin
     # - Everyone else → operator
-    if not pf_org_id:
-        crm_role = "super_admin"
-    elif pf_is_org_owner:
+    if pf_is_org_owner:
         crm_role = "super_admin"
     elif pf_org_role in ("owner", "admin"):
         crm_role = "admin"
