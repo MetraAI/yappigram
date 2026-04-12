@@ -371,22 +371,20 @@ async def verify_code(phone: str, code: str, password_2fa: str | None = None) ->
 
 
 def _extract_media(msg_obj) -> tuple[str | None, str | None]:
-    """Determine media type and extension from a Telethon message."""
+    """Determine media type and extension from a Telethon message.
+
+    Check order matters! Telethon's properties overlap:
+      - `.video` is True for regular video AND video_notes AND .webm stickers
+      - `.sticker` is True for stickers that also have DocumentAttributeVideo
+    So we must check the MOST SPECIFIC types first (sticker, video_note)
+    before falling through to the generic `.video`.
+    """
     if msg_obj.photo:
         return "photo", ".jpg"
-    # video_note (кружочек / circle video) MUST be checked before
-    # the generic `video` — Telethon's `.video` returns True for
-    # both regular videos and round video notes, so without this
-    # ordering video notes fall through as "video" and the frontend
-    # renders them as a plain square player.
-    if msg_obj.video_note:
-        return "video_note", ".mp4"
-    if msg_obj.video:
-        return "video", ".mp4"
-    if msg_obj.voice:
-        return "voice", ".ogg"
+    # Stickers MUST be checked before video — animated .webm stickers
+    # have both DocumentAttributeSticker and DocumentAttributeVideo,
+    # so msg_obj.video returns True for them too.
     if msg_obj.sticker:
-        # Determine sticker format: webp (static), webm (video), tgs (animated lottie)
         sticker_ext = ".webp"
         if msg_obj.document and msg_obj.document.mime_type:
             mime = msg_obj.document.mime_type
@@ -395,6 +393,12 @@ def _extract_media(msg_obj) -> tuple[str | None, str | None]:
             elif "tgs" in mime or "gzip" in mime:
                 sticker_ext = ".tgs"
         return "sticker", sticker_ext
+    if msg_obj.video_note:
+        return "video_note", ".mp4"
+    if msg_obj.video:
+        return "video", ".mp4"
+    if msg_obj.voice:
+        return "voice", ".ogg"
     if msg_obj.document:
         # Try to get extension from document filename attribute
         ext = ""
