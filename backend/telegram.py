@@ -672,7 +672,9 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                     group_title = getattr(chat, "title", None) or ""
                 else:
                     sender = await event.get_sender()
-                    first_name = getattr(sender, "first_name", "") or ""
+                    fn = getattr(sender, "first_name", "") or ""
+                    ln = getattr(sender, "last_name", "") or ""
+                    first_name = f"{fn} {ln}".strip() if ln else fn
                     username = getattr(sender, "username", None)
 
                 # Alias seed is random — avoids SELECT count(*) FROM contacts
