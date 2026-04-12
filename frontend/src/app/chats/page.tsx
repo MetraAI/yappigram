@@ -502,7 +502,18 @@ const MessageBubble = memo(function MessageBubble({ m, isGroup, forwardMode, isF
             <div className="mb-2">
               {m.media_type === "photo" && <img src={mediaUrl(m.media_path, m.media_url)} alt="" loading="lazy" className="rounded-xl max-w-full max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity" onClick={(e) => { e.stopPropagation(); onLightbox(mediaUrl(m.media_path!, m.media_url)); }} />}
               {m.media_type === "video" && <video src={mediaUrl(m.media_path, m.media_url)} controls preload="none" className="rounded-xl max-w-full max-h-64" />}
-              {m.media_type === "video_note" && <div className="w-48 h-48 rounded-full overflow-hidden border-2 border-brand/30"><video src={mediaUrl(m.media_path, m.media_url)} controls preload="none" className="w-full h-full object-cover" style={{ borderRadius: "50%" }} /></div>}
+              {m.media_type === "video_note" && (
+                <div className="w-48 h-48 rounded-full overflow-hidden border-2 border-brand/30 cursor-pointer" style={{ borderRadius: "50%" }}>
+                  <video
+                    src={mediaUrl(m.media_path, m.media_url)}
+                    controls
+                    preload="metadata"
+                    playsInline
+                    className="w-full h-full object-cover"
+                    style={{ borderRadius: "50%", clipPath: "circle(50%)" }}
+                  />
+                </div>
+              )}
               {m.media_type === "voice" && <VoicePlayer src={mediaUrl(m.media_path, m.media_url)} direction={m.direction} />}
               {m.media_type === "document" && (() => {
                 const fname = m.media_path!.split('/').pop() || '';

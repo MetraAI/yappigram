@@ -374,6 +374,13 @@ def _extract_media(msg_obj) -> tuple[str | None, str | None]:
     """Determine media type and extension from a Telethon message."""
     if msg_obj.photo:
         return "photo", ".jpg"
+    # video_note (кружочек / circle video) MUST be checked before
+    # the generic `video` — Telethon's `.video` returns True for
+    # both regular videos and round video notes, so without this
+    # ordering video notes fall through as "video" and the frontend
+    # renders them as a plain square player.
+    if msg_obj.video_note:
+        return "video_note", ".mp4"
     if msg_obj.video:
         return "video", ".mp4"
     if msg_obj.voice:
