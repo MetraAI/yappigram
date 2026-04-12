@@ -2059,25 +2059,22 @@ function ChatsContent() {
                 </div>
               )}
             </div>
-            {/* Tag chips — only this row scrolls horizontally */}
-            <div className="flex items-center gap-1.5 overflow-x-auto flex-nowrap min-w-0 flex-1" style={{ scrollbarWidth: "thin" }}>
-              {allTags.map((tag) => (
-                <button
-                  key={tag.id}
-                  onClick={() => setFilterTag(filterTag === tag.name ? null : tag.name)}
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all shrink-0 whitespace-nowrap ${
-                    filterTag === tag.name
-                      ? "border-transparent shadow-sm"
-                      : "border-surface-border opacity-50 hover:opacity-80"
-                  }`}
-                  style={{ backgroundColor: tag.color + "25", color: tag.color, borderColor: filterTag === tag.name ? tag.color + "40" : undefined }}
-                >
-                  {tag.name}
-                </button>
-              ))}
-              {filterTag && (
-                <button onClick={() => setFilterTag(null)} className="text-[10px] text-slate-500 hover:text-white">✕</button>
-              )}
+            {/* Tag filter — compact dropdown */}
+            <div className="relative flex-shrink-0">
+              <select
+                value={filterTag || ""}
+                onChange={(e) => setFilterTag(e.target.value || null)}
+                className="appearance-none bg-surface-card border border-surface-border rounded-lg pl-2 pr-6 py-1 text-[11px] text-slate-300 cursor-pointer focus:outline-none focus:border-brand/50 transition-colors"
+                style={filterTag ? { borderColor: (tagMap.get(filterTag)?.color || "#666") + "60", color: tagMap.get(filterTag)?.color || "#ccc" } : {}}
+              >
+                <option value="">Все теги</option>
+                {allTags.map((tag) => (
+                  <option key={tag.id} value={tag.name}>{tag.name}</option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center">
+                <svg className="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              </div>
             </div>
           </div>
         </div>
