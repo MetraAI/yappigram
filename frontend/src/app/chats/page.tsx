@@ -126,6 +126,114 @@ const LazyAvatar = memo(function LazyAvatar({ contactId, alias, chatType, hasErr
   );
 });
 
+// Video note (кружочек) player — circle video with controls BELOW the circle,
+// not crammed inside like the native <video controls>. Click the circle to
+// play/pause. Progress bar + time shown underneath.
+const VideoNote = memo(function VideoNote({ src, direction }: { src: string; direction: string }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const isOut = direction === "outgoing";
+
+  const toggle = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (playing) v.pause(); else v.play();
+    setPlaying(!playing);
+  };
+
+  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const v = videoRef.current;
+    if (!v || !v.duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    v.currentTime = pct * v.duration;
+    setProgress(pct);
+  };
+
+  const fmt = (s: number) => {
+    if (!s || !isFinite(s)) return "0:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  return (
+    <div className="mb-2 flex flex-col items-center gap-1.5" style={{ maxWidth: 240 }}>
+      {/* Circle video — click toggles play/pause */}
+      <div
+        className="relative w-48 h-48 rounded-full overflow-hidden cursor-pointer border-2 border-brand/20 shrink-0"
+        onClick={toggle}
+        style={{ clipPath: "circle(50%)" }}
+      >
+        <video
+          ref={videoRef}
+          src={src}
+          preload="metadata"
+          playsInline
+          muted={false}
+          className="w-full h-full object-cover"
+          onLoadedMetadata={(e) => { setDuration((e.target as HTMLVideoElement).duration); setLoaded(true); }}
+          onTimeUpdate={(e) => {
+            const v = e.target as HTMLVideoElement;
+            if (v.duration) setProgress(v.currentTime / v.duration);
+          }}
+          onEnded={() => { setPlaying(false); setProgress(0); }}
+        />
+        {/* Play/pause overlay */}
+        {!playing && loaded && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/20 transition-opacity">
+            <svg className="w-12 h-12 text-white drop-shadow-lg" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3" />
+            </svg>
+          </div>
+        )}
+        {/* Loading state */}
+        {!loaded && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+            <div className="w-8 h-8 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+          </div>
+        )}
+      </div>
+
+      {/* Controls strip below the circle */}
+      <div className="w-48 flex items-center gap-2">
+        <button
+          onClick={toggle}
+          className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+            isOut ? "bg-white/20 hover:bg-white/30" : "bg-brand/20 hover:bg-brand/30"
+          }`}
+        >
+          {playing ? (
+            <svg className={`w-3.5 h-3.5 ${isOut ? "text-white" : "text-brand"}`} viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+            </svg>
+          ) : (
+            <svg className={`w-3.5 h-3.5 ml-0.5 ${isOut ? "text-white" : "text-brand"}`} viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3" />
+            </svg>
+          )}
+        </button>
+        {/* Progress bar */}
+        <div
+          className={`flex-1 h-1 rounded-full cursor-pointer ${isOut ? "bg-white/20" : "bg-slate-600"}`}
+          onClick={seek}
+        >
+          <div
+            className={`h-full rounded-full transition-all duration-100 ${isOut ? "bg-white" : "bg-brand"}`}
+            style={{ width: `${progress * 100}%` }}
+          />
+        </div>
+        <span className={`text-[10px] tabular-nums shrink-0 ${isOut ? "text-white/50" : "text-slate-500"}`}>
+          {playing ? fmt(videoRef.current?.currentTime || 0) : fmt(duration)}
+        </span>
+      </div>
+    </div>
+  );
+});
+
 // Custom voice message player with waveform visualization
 const VoicePlayer = memo(function VoicePlayer({ src, direction }: { src: string; direction: string }) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -503,16 +611,7 @@ const MessageBubble = memo(function MessageBubble({ m, isGroup, forwardMode, isF
               {m.media_type === "photo" && <img src={mediaUrl(m.media_path, m.media_url)} alt="" loading="lazy" className="rounded-xl max-w-full max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity" onClick={(e) => { e.stopPropagation(); onLightbox(mediaUrl(m.media_path!, m.media_url)); }} />}
               {m.media_type === "video" && <video src={mediaUrl(m.media_path, m.media_url)} controls preload="none" className="rounded-xl max-w-full max-h-64" />}
               {m.media_type === "video_note" && (
-                <div className="w-48 h-48 rounded-full overflow-hidden border-2 border-brand/30 cursor-pointer" style={{ borderRadius: "50%" }}>
-                  <video
-                    src={mediaUrl(m.media_path, m.media_url)}
-                    controls
-                    preload="metadata"
-                    playsInline
-                    className="w-full h-full object-cover"
-                    style={{ borderRadius: "50%", clipPath: "circle(50%)" }}
-                  />
-                </div>
+                <VideoNote src={mediaUrl(m.media_path, m.media_url)} direction={m.direction} />
               )}
               {m.media_type === "voice" && <VoicePlayer src={mediaUrl(m.media_path, m.media_url)} direction={m.direction} />}
               {m.media_type === "document" && (() => {
