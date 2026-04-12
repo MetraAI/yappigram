@@ -1095,19 +1095,38 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
     @client.on(events.MessageDeleted)
     @_safe_handler
     async def on_message_deleted(event):
+        """Mirror message deletions from Telegram into CRM.
+
+        Previously only handled incoming deletions (direction="incoming"),
+        so deleting your OWN message in native TG didn't sync. Now handles
+        both directions. Also resolves contact_id when chat_id is available
+        (channels/groups) to use the composite index and avoid a seq scan.
+        """
         deleted_ids = event.deleted_ids
         if not deleted_ids:
             return
+        peer_id = getattr(event, "chat_id", None)
         async with async_session() as db:
-            for tg_msg_id in deleted_ids:
-                result = await db.execute(
-                    select(Message).where(
-                        Message.tg_message_id == tg_msg_id,
-                        Message.direction == "incoming",
-                    ).order_by(Message.created_at.desc()).limit(1)
+            # Resolve contact if peer is known (channels/groups).
+            # For private chats Telethon may not provide chat_id.
+            contact_pk = None
+            if peer_id:
+                cr = await db.execute(
+                    select(Contact.id).where(
+                        Contact.tg_account_id == account.id,
+                        Contact.real_tg_id == peer_id,
+                    ).limit(1)
                 )
+                contact_pk = cr.scalar_one_or_none()
+
+            for tg_msg_id in deleted_ids:
+                q = select(Message).where(Message.tg_message_id == tg_msg_id)
+                if contact_pk:
+                    q = q.where(Message.contact_id == contact_pk)
+                q = q.order_by(Message.created_at.desc()).limit(1)
+                result = await db.execute(q)
                 msg = result.scalar_one_or_none()
-                if msg:
+                if msg and not msg.is_deleted:
                     msg.is_deleted = True
                     await db.commit()
                     await ws_manager.broadcast_to_admins({
