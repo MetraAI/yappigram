@@ -1166,5 +1166,122 @@ function AdminSettingsSection() {
         </div>
       )}
     </section>
+
+    {/* Auto-tag + Auto-greeting */}
+    <section className="bg-gradient-to-br from-surface-card to-surface border border-surface-border rounded-2xl p-6">
+      <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+        <svg className="w-5 h-5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" />
+        </svg>
+        Автоматизация (первое касание)
+      </h2>
+      <p className="text-xs text-slate-500 mb-4">
+        При первом сообщении от нового контакта: автоматически присваиваются теги и отправляется приветствие.
+      </p>
+
+      {accounts.length > 0 && accounts.map((acc) => (
+        <AutoSettingsCard key={acc.id} account={acc} allTags={tags} templates={templates} />
+      ))}
+    </section>
+  );
+}
+
+
+// ── Auto-tag + auto-greeting card per TG account ──
+
+function AutoSettingsCard({ account, allTags, templates }: {
+  account: { id: string; display_name: string | null; phone: string };
+  allTags: { id: string; name: string; color: string }[];
+  templates: { id: string; title: string; tg_account_id?: string | null }[];
+}) {
+  const [autoTags, setAutoTags] = useState<string[]>([]);
+  const [greetingId, setGreetingId] = useState<string>("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Load current settings
+  useEffect(() => {
+    api(`/api/tg/${account.id}/auto-settings`).then((data: any) => {
+      setAutoTags(data.auto_tags || []);
+      setGreetingId(data.auto_greeting_template_id || "");
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, [account.id]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api(`/api/tg/${account.id}/auto-settings`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          auto_tags: autoTags,
+          auto_greeting_template_id: greetingId || "null",
+        }),
+      });
+    } catch {}
+    setSaving(false);
+  };
+
+  const toggleTag = (name: string) => {
+    setAutoTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
+  };
+
+  const acctTemplates = templates.filter(t => !t.tg_account_id || t.tg_account_id === account.id);
+
+  if (!loaded) return null;
+
+  return (
+    <div className="bg-surface border border-surface-border rounded-xl p-4 mb-3">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-medium text-slate-300">{account.display_name || account.phone}</span>
+        <button
+          onClick={save}
+          disabled={saving}
+          className="px-3 py-1 text-xs bg-brand/20 text-brand rounded-lg hover:bg-brand/30 disabled:opacity-50"
+        >
+          {saving ? "..." : "Сохранить"}
+        </button>
+      </div>
+
+      {/* Auto-tags */}
+      <div className="mb-3">
+        <label className="block text-xs text-slate-500 mb-1.5">Авто-теги (присваиваются новому контакту)</label>
+        <div className="flex flex-wrap gap-1.5">
+          {allTags.filter(t => !t.tg_account_id || t.tg_account_id === account.id).map(tag => (
+            <button
+              key={tag.id}
+              onClick={() => toggleTag(tag.name)}
+              className={`px-2 py-0.5 rounded-full text-[11px] font-medium border transition-all ${
+                autoTags.includes(tag.name)
+                  ? "border-transparent shadow-sm"
+                  : "border-surface-border opacity-40 hover:opacity-80"
+              }`}
+              style={{ backgroundColor: tag.color + "25", color: tag.color }}
+            >
+              {autoTags.includes(tag.name) ? "✓ " : "+ "}{tag.name}
+            </button>
+          ))}
+          {allTags.length === 0 && <span className="text-[10px] text-slate-600">Нет тегов. Создайте выше.</span>}
+        </div>
+      </div>
+
+      {/* Auto-greeting template */}
+      <div>
+        <label className="block text-xs text-slate-500 mb-1.5">Авто-приветствие (шаблон)</label>
+        <select
+          value={greetingId}
+          onChange={(e) => setGreetingId(e.target.value)}
+          className="w-full bg-surface-card border border-surface-border rounded-lg px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-brand/50"
+        >
+          <option value="">Без приветствия</option>
+          {acctTemplates.map(t => (
+            <option key={t.id} value={t.id}>{t.title}</option>
+          ))}
+        </select>
+        <p className="text-[10px] text-slate-600 mt-1">
+          Шаблон отправляется автоматически при первом сообщении от нового контакта.
+        </p>
+      </div>
+    </div>
   );
 }

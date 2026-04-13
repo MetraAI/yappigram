@@ -89,6 +89,14 @@ class TgAccount(Base):
     show_real_names = Column(Boolean, default=True)
     disconnected_at = Column(DateTime, nullable=True)
 
+    # Auto-tag: tag names applied to every NEW private contact on first message.
+    # JSON array of tag name strings, e.g. ["RD", "new_lead"].
+    auto_tags = Column(ARRAY(String), default=lambda: [])
+
+    # Auto-greeting: template ID sent automatically when a new contact writes
+    # their first message. NULL = no greeting. References message_templates.id.
+    auto_greeting_template_id = Column(UUID(as_uuid=True), nullable=True)
+
     contacts = relationship("Contact", back_populates="tg_account")
 
 

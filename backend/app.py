@@ -822,6 +822,8 @@ async def on_startup():
                 ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS session_string TEXT;
                 ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS display_name VARCHAR;
                 ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS disconnected_at TIMESTAMP;
+                ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS auto_tags TEXT[] DEFAULT '{}';
+                ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS auto_greeting_template_id UUID;
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS grouped_id BIGINT;
                 CREATE INDEX IF NOT EXISTS ix_messages_grouped_id ON messages (grouped_id) WHERE grouped_id IS NOT NULL;
                 -- Scheduled messages
@@ -1514,6 +1516,51 @@ async def tg_disconnect(account_id: UUID, user: CurrentUser, db: DB):
         logging.getLogger(__name__).warning(f"CRM billing disconnect failed (non-blocking): {e}")
 
     return {"status": "disconnected"}
+
+
+@app.get("/api/tg/{account_id}/auto-settings")
+async def get_auto_settings(account_id: UUID, user: CurrentUser, db: DB):
+    """Get auto-tag + auto-greeting settings for a TG account."""
+    result = await db.execute(
+        select(TgAccount).where(TgAccount.id == account_id, TgAccount.org_id == _org_id(user))
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return {
+        "auto_tags": account.auto_tags or [],
+        "auto_greeting_template_id": str(account.auto_greeting_template_id) if account.auto_greeting_template_id else None,
+    }
+
+
+class AutoSettingsUpdate(PydanticBaseModel):
+    auto_tags: list[str] | None = None
+    auto_greeting_template_id: str | None = None  # UUID string or null
+
+
+@app.patch("/api/tg/{account_id}/auto-settings")
+async def update_auto_settings(account_id: UUID, req: AutoSettingsUpdate, user: CurrentUser, db: DB):
+    """Update auto-tag + auto-greeting settings for a TG account."""
+    result = await db.execute(
+        select(TgAccount).where(TgAccount.id == account_id, TgAccount.org_id == _org_id(user))
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    if req.auto_tags is not None:
+        account.auto_tags = req.auto_tags
+    if req.auto_greeting_template_id is not None:
+        if req.auto_greeting_template_id == "" or req.auto_greeting_template_id == "null":
+            account.auto_greeting_template_id = None
+        else:
+            account.auto_greeting_template_id = UUID(req.auto_greeting_template_id)
+
+    await db.commit()
+    return {
+        "auto_tags": account.auto_tags or [],
+        "auto_greeting_template_id": str(account.auto_greeting_template_id) if account.auto_greeting_template_id else None,
+    }
 
 
 # ============================================================

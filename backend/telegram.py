@@ -721,6 +721,43 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                     print(f"[WARN] Failed to create contact after 5 attempts for {peer_tg_id}")
                     return
 
+                # === AUTO-TAG + AUTO-GREETING on first contact ===
+                if not is_group and contact:
+                    try:
+                        # Auto-tag: apply tags from tg_account.auto_tags
+                        if account.auto_tags:
+                            contact.tags = list(set((contact.tags or []) + list(account.auto_tags)))
+                            await db.commit()
+
+                        # Auto-greeting: send template on first message
+                        if account.auto_greeting_template_id:
+                            from models import MessageTemplate
+                            tpl_result = await db.execute(
+                                select(MessageTemplate).where(MessageTemplate.id == account.auto_greeting_template_id)
+                            )
+                            greeting_tpl = tpl_result.scalar_one_or_none()
+                            if greeting_tpl:
+                                # Simple text greeting (first block or content)
+                                greeting_text = None
+                                if greeting_tpl.blocks_json:
+                                    for block in sorted(greeting_tpl.blocks_json, key=lambda b: b.get("order", 0)):
+                                        if block.get("type") in ("static", "variable") and block.get("content"):
+                                            greeting_text = (greeting_text or "") + block["content"]
+                                elif greeting_tpl.content:
+                                    greeting_text = greeting_tpl.content
+
+                                if greeting_text:
+                                    import asyncio as _aio
+                                    # Small delay so the greeting doesn't arrive before the user's message is processed
+                                    await _aio.sleep(1.0)
+                                    try:
+                                        await send_message(account.id, peer_tg_id, greeting_text)
+                                        print(f"[AUTO-GREET] Sent greeting to {peer_tg_id} via template {account.auto_greeting_template_id}")
+                                    except Exception as greet_err:
+                                        print(f"[AUTO-GREET] Failed for {peer_tg_id}: {greet_err}")
+                    except Exception as auto_err:
+                        print(f"[AUTO] Error applying auto-tag/greeting for {peer_tg_id}: {auto_err}")
+
             elif contact.status == "blocked":
                 return
 
