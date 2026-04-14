@@ -438,31 +438,39 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
             sanitized_content = sanitize_text(msg_obj.text)
             # Use Telegram date, strip tzinfo for TIMESTAMP WITHOUT TIME ZONE
             tg_date = msg_obj.date.replace(tzinfo=None) if msg_obj.date else None
-            msg = Message(
-                contact_id=contact.id,
-                tg_message_id=msg_obj.id,
-                direction="incoming",
-                content=sanitized_content,
-                media_type=media_type,
-                media_path=media_path,
-                reply_to_tg_msg_id=reply_to_tg_msg_id,
-                reply_to_msg_id=reply_to_msg_id,
-                reply_to_content_preview=reply_to_content_preview,
-                forwarded_from_alias=forwarded_from_alias,
-                sender_tg_id=sender_tg_id_val,
-                sender_alias=sender_alias_val,
-                inline_buttons=inline_buttons_json,
-                topic_id=topic_id,
-                topic_name=topic_name,
-                created_at=tg_date,
-            )
-            db.add(msg)
-            contact.last_message_at = func.now()
+
+            # Save messages ONLY for approved contacts. Pending/dormant/blocked
+            # messages are not persisted — history will be fetched on approve.
+            # This prevents DB bloat from dormant groups flooding.
+            msg = None
+            if contact.status == "approved":
+                msg = Message(
+                    contact_id=contact.id,
+                    tg_message_id=msg_obj.id,
+                    direction="incoming",
+                    content=sanitized_content,
+                    media_type=media_type,
+                    media_path=media_path,
+                    reply_to_tg_msg_id=reply_to_tg_msg_id,
+                    reply_to_msg_id=reply_to_msg_id,
+                    reply_to_content_preview=reply_to_content_preview,
+                    forwarded_from_alias=forwarded_from_alias,
+                    sender_tg_id=sender_tg_id_val,
+                    sender_alias=sender_alias_val,
+                    inline_buttons=inline_buttons_json,
+                    topic_id=topic_id,
+                    topic_name=topic_name,
+                    created_at=tg_date,
+                )
+                db.add(msg)
+                contact.last_message_at = func.now()
+
             # Save before commit — attributes expire after commit
             contact_assigned_to = contact.assigned_to
             contact_tg_account_id = contact.tg_account_id
             await db.commit()
-            await db.refresh(msg)
+            if msg:
+                await db.refresh(msg)
 
             # --- NOTIFICATIONS ---
             if is_new_contact:

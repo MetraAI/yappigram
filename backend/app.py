@@ -93,12 +93,42 @@ SuperAdmin = Annotated[Staff, Depends(require_role("super_admin"))]
 # Startup / Shutdown
 # ============================================================
 
+async def _periodic_cleanup():
+    """Hourly cleanup: delete orphan messages for non-approved contacts."""
+    from sqlalchemy import text as sa_text
+    while True:
+        try:
+            await asyncio.sleep(3600)  # 1 hour
+            async with engine.begin() as conn:
+                # Delete message_edit_history for orphan messages first (FK)
+                await conn.execute(sa_text("""
+                    DELETE FROM message_edit_history
+                    WHERE message_id IN (
+                        SELECT m.id FROM messages m
+                        JOIN contacts c ON c.id = m.contact_id
+                        WHERE c.status != 'approved'
+                    )
+                """))
+                result = await conn.execute(sa_text("""
+                    DELETE FROM messages
+                    WHERE contact_id IN (
+                        SELECT id FROM contacts WHERE status != 'approved'
+                    )
+                """))
+                deleted = result.rowcount or 0
+                if deleted > 0:
+                    print(f"[CLEANUP] Deleted {deleted} orphan messages from non-approved contacts")
+        except Exception as e:
+            print(f"[CLEANUP] Error: {e}")
+
+
 @app.on_event("startup")
 async def on_startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await startup_listeners()
     asyncio.create_task(start_bot_polling())
+    asyncio.create_task(_periodic_cleanup())
 
 
 @app.on_event("shutdown")
