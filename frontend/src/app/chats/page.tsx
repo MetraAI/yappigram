@@ -918,6 +918,8 @@ function ChatsContent() {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const selectedRef = useRef<Contact | null>(null);
   const filterAccountRef = useRef<string | null>(null);
+  const fromDateParamRef = useRef<string | undefined>(undefined);
+  const toDateParamRef = useRef<string | undefined>(undefined);
   const contactsRef = useRef<Contact[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1037,6 +1039,25 @@ function ChatsContent() {
 
   // Drafts are initialized from localStorage in useState above
 
+  // Build YYYY-MM-DD[THH:MM] strings for the server-side date filter from
+  // the input-bound state. Empty date → undefined (filter off). Time is
+  // optional; when date is set without time, backend applies whole-day
+  // semantics (00:00 for from, 23:59:59 for to).
+  const fromDateParam = useMemo(() => {
+    if (!dateFromFilter) return undefined;
+    return timeFromFilter ? `${dateFromFilter}T${timeFromFilter}` : dateFromFilter;
+  }, [dateFromFilter, timeFromFilter]);
+  const toDateParam = useMemo(() => {
+    if (!dateToFilter) return undefined;
+    return timeToFilter ? `${dateToFilter}T${timeToFilter}` : dateToFilter;
+  }, [dateToFilter, timeToFilter]);
+
+  // Mirror the current filter into refs so the WS handler and the
+  // polling fallback (both mounted once with [] deps) can pick up the
+  // latest values without being re-bound on every change.
+  useEffect(() => { fromDateParamRef.current = fromDateParam; }, [fromDateParam]);
+  useEffect(() => { toDateParamRef.current = toDateParam; }, [toDateParam]);
+
   // Re-fetch contacts when account filter changes OR page becomes visible.
   // Gated behind accountsReady — NEVER fetch contacts with an unvalidated
   // account ID, otherwise stale sessionStorage values cause "No chats".
@@ -1044,8 +1065,8 @@ function ChatsContent() {
     if (!accountsReady) return;
     const acctId = filterAccountId || undefined;
     Promise.all([
-      fetchContacts(undefined, acctId, false),
-      fetchContacts(undefined, acctId, true),
+      fetchContacts(undefined, acctId, false, undefined, undefined, fromDateParam, toDateParam),
+      fetchContacts(undefined, acctId, true, undefined, undefined, fromDateParam, toDateParam),
     ]).then(([normal, archived]) => {
       const merged = [...normal, ...archived];
       setContacts(merged);
@@ -1075,7 +1096,7 @@ function ChatsContent() {
         });
       }
     }).catch(() => {});
-  }, [filterAccountId, accountsReady]);
+  }, [filterAccountId, accountsReady, fromDateParam, toDateParam]);
 
   useEffect(() => {
     refetchContacts();
@@ -1116,7 +1137,12 @@ function ChatsContent() {
           if (!exists) {
             // New contact — fetch full contact list
             const acctId = filterAccountRef.current || undefined;
-            Promise.all([fetchContacts(undefined, acctId, false), fetchContacts(undefined, acctId, true)])
+            const fd = fromDateParamRef.current;
+            const td = toDateParamRef.current;
+            Promise.all([
+              fetchContacts(undefined, acctId, false, undefined, undefined, fd, td),
+              fetchContacts(undefined, acctId, true, undefined, undefined, fd, td),
+            ])
               .then(([n, a]) => setContacts([...n, ...a])).catch(console.error);
             return prev;
           }
@@ -1219,9 +1245,11 @@ function ChatsContent() {
     const interval = setInterval(() => {
       if (isWSConnected()) return; // Skip — WS handles updates
       const acctId = filterAccountRef.current || undefined;
+      const fd = fromDateParamRef.current;
+      const td = toDateParamRef.current;
       Promise.all([
-        fetchContacts(undefined, acctId, false),
-        fetchContacts(undefined, acctId, true),
+        fetchContacts(undefined, acctId, false, undefined, undefined, fd, td),
+        fetchContacts(undefined, acctId, true, undefined, undefined, fd, td),
       ]).then(([normal, archived]) => {
         const all = [...normal, ...archived];
         setContacts((prev) => {
@@ -1797,20 +1825,16 @@ function ChatsContent() {
   }, [dateFromFilter, dateToFilter, timeFromFilter, timeToFilter]);
   const dateFilterActive = dateFilterBounds.from !== null || dateFilterBounds.to !== null;
 
+  // Date-range filtering is now done server-side (see fromDateParam /
+  // toDateParam threaded into fetchContacts) — the semantics are
+  // "contacts whose FIRST incoming message falls in range", which cannot
+  // be answered from `last_message_at` alone. So we drop the client-side
+  // date predicate and just trust the backend response.
   const filteredContacts = useMemo(() => contacts
     .filter((c) => {
       if (showArchived ? !c.is_archived : c.is_archived) return false;
       if (search && !c.alias.toLowerCase().includes(search.toLowerCase())) return false;
       if (filterTag && !c.tags.includes(filterTag)) return false;
-      // Date range filter — matches against last_message_at. A chat with
-      // no messages is excluded when the filter is active.
-      if (dateFilterActive) {
-        if (!c.last_message_at) return false;
-        const t = new Date(c.last_message_at + (c.last_message_at.endsWith("Z") ? "" : "Z")).getTime();
-        if (!Number.isFinite(t)) return false;
-        if (dateFilterBounds.from !== null && t < dateFilterBounds.from) return false;
-        if (dateFilterBounds.to !== null && t > dateFilterBounds.to) return false;
-      }
       return true;
     })
     .sort((a, b) => {
@@ -1822,7 +1846,7 @@ function ChatsContent() {
       const aDate = a.last_message_at || a.created_at || "";
       const bDate = b.last_message_at || b.created_at || "";
       return bDate.localeCompare(aDate);
-    }), [contacts, showArchived, search, filterTag, pinned, draftIds, dateFilterActive, dateFilterBounds]);
+    }), [contacts, showArchived, search, filterTag, pinned, draftIds]);
 
   // Pre-compute album groups for message rendering (O(n) instead of O(n²))
   const albumMap = useMemo(() => {

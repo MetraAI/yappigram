@@ -515,13 +515,26 @@ export async function createTag(data: { name: string; color: string; tg_account_
   return r;
 }
 
-export async function fetchContacts(status?: string, tgAccountId?: string, archived?: boolean, search?: string, limit?: number): Promise<Contact[]> {
+export async function fetchContacts(
+  status?: string,
+  tgAccountId?: string,
+  archived?: boolean,
+  search?: string,
+  limit?: number,
+  fromDate?: string,
+  toDate?: string,
+): Promise<Contact[]> {
   const params = new URLSearchParams();
   if (status) params.set("status", status);
   if (tgAccountId) params.set("tg_account_id", tgAccountId);
   if (archived) params.set("archived", "true");
   if (search) params.set("search", search);
   if (limit) params.set("limit", String(limit));
+  // Date-range filter semantics: contacts whose FIRST incoming message
+  // lies within [fromDate, toDate]. Backend handles the subquery; we just
+  // pass strings (YYYY-MM-DD or YYYY-MM-DDTHH:MM).
+  if (fromDate) params.set("from_date", fromDate);
+  if (toDate) params.set("to_date", toDate);
   return api(`/api/contacts?${params.toString()}`);
 }
 

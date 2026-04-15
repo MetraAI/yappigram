@@ -1631,6 +1631,14 @@ async def list_contacts(
     tg_account_id: UUID | None = None,
     archived: bool = Query(False),
     search: str | None = Query(None, description="Search by alias or phone"),
+    # Date range — filters contacts whose FIRST incoming message landed
+    # inside the window. Matches the semantic used by /api/reports/new-chats
+    # ("new chats in this period"). Contact.last_message_at would be wrong
+    # here: an old contact who replied today would falsely appear as "new
+    # today". Uses the same MIN(created_at) WHERE direction='incoming'
+    # subquery pattern.
+    from_date: str | None = Query(None, description="YYYY-MM-DD or YYYY-MM-DDTHH:MM"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD or YYYY-MM-DDTHH:MM"),
     # The denormalization (last_message_* columns) makes 2000-row responses
     # cheap at the DB layer. Frontend still pays for payload size + JSON
     # parse, but that's a network/client concern — add explicit pagination
@@ -1677,6 +1685,32 @@ async def list_contacts(
         # alias only — previously the code referenced Contact.phone and
         # raised AttributeError on every search call.
         query = query.where(Contact.alias.ilike(search_pattern))
+
+    # Date-range filter over first-incoming-message timestamp.
+    if from_date or to_date:
+        def _parse_contact_dt(s: str, end_of_day: bool) -> datetime:
+            try:
+                if "T" in s or " " in s:
+                    return datetime.fromisoformat(s.replace(" ", "T"))
+                d = datetime.fromisoformat(s)
+                return d.replace(hour=23, minute=59, second=59) if end_of_day else d
+            except ValueError:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid date format. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM.")
+
+        first_msg_sub = (
+            select(
+                Message.contact_id.label("contact_id"),
+                func.min(Message.created_at).label("first_at"),
+            )
+            .where(Message.direction == "incoming")
+            .group_by(Message.contact_id)
+            .subquery()
+        )
+        query = query.join(first_msg_sub, first_msg_sub.c.contact_id == Contact.id)
+        if from_date:
+            query = query.where(first_msg_sub.c.first_at >= _parse_contact_dt(from_date, end_of_day=False))
+        if to_date:
+            query = query.where(first_msg_sub.c.first_at <= _parse_contact_dt(to_date, end_of_day=True))
 
     query = query.order_by(Contact.is_pinned.desc(), Contact.last_message_at.desc().nullslast())
     query = query.offset(offset).limit(limit)
