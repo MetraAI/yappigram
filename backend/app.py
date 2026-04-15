@@ -1358,9 +1358,13 @@ async def sso_auth(req: SsoAuthRequest, request: Request, db: DB):
     _audit(db, user, "sso_login", metadata={"pf_user_id": pf_user_id, "role": crm_role})
     await db.commit()
 
+    # Carry PostForge session id into CRM JWT so the parent-revoke webhook
+    # can kill this token in O(1).
+    pf_sid = pf_user.get("session_id")
+
     return TokenResponse(
-        access_token=create_token(user.id, "access"),
-        refresh_token=create_token(user.id, "refresh"),
+        access_token=create_token(user.id, "access", pf_sid=pf_sid),
+        refresh_token=create_token(user.id, "refresh", pf_sid=pf_sid),
         role=user.role,
     )
 
@@ -5487,6 +5491,46 @@ def _verify_bot_secret(authorization: str = Header(default="")) -> None:
     import hmac as _hmac
     if not _hmac.compare_digest(token, expected):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid bot token")
+
+
+class _InvalidateSessionsRequest(PydanticBaseModel):
+    sids: list[str]  # PostForge user_sessions.id values
+
+
+@app.post("/api/internal/invalidate-sessions")
+async def internal_invalidate_sessions(
+    req: _InvalidateSessionsRequest,
+    _: None = Depends(_verify_bot_secret),
+):
+    """Receive PostForge's revoke webhook.
+
+    PostForge calls this whenever a user_sessions row is revoked for ANY
+    reason: explicit "завершить сессию" from the UI, password change,
+    logout, revoke-others, cookie-theft detection (fingerprint/country
+    mismatch mid-request). We write a Redis blacklist entry for each sid;
+    the CRM auth dependency (``get_current_user`` in backend/auth.py)
+    checks it on every request and immediately 401s any CRM JWT whose
+    pf_sid is flagged.
+
+    TTL is 35 days — comfortably longer than any CRM JWT lifetime, so
+    a flag set today can never be outlived by a token issued before it.
+    """
+    if not req.sids:
+        return {"ok": True, "invalidated": 0}
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=3)
+        try:
+            for sid in req.sids:
+                await r.set(f"pf_sess_revoked:{sid}", "1", ex=35 * 24 * 3600)
+        finally:
+            await r.aclose()
+    except Exception as e:
+        # Failing here is not catastrophic — the CRM JWT's short TTL is
+        # the ultimate backstop. But it IS bad, so surface as 500 so
+        # PostForge can retry.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"redis write failed: {e}")
+    return {"ok": True, "invalidated": len(req.sids)}
 
 
 class _StaffSyncRoleRequest(PydanticBaseModel):

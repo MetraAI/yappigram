@@ -2,8 +2,9 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Optional
 from urllib.parse import parse_qs, unquote
 from uuid import UUID
 
@@ -17,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from models import Staff, async_session
 
+logger = logging.getLogger(__name__)
+
 # Telegram Ed25519 public key for production
 _TG_PUBLIC_KEY_HEX = "e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d"
 _TG_PUBLIC_KEY = Ed25519PublicKey.from_public_bytes(bytes.fromhex(_TG_PUBLIC_KEY_HEX))
@@ -26,17 +29,37 @@ security = HTTPBearer()
 ALGORITHM = "HS256"
 
 
-def create_token(staff_id: UUID, token_type: str = "access") -> str:
+def create_token(staff_id: UUID, token_type: str = "access", pf_sid: Optional[str] = None) -> str:
+    """Mint CRM JWT. ``pf_sid`` is the PostForge session id this token is
+    derived from — stored so the session-kill middleware can blacklist it
+    when PostForge tells us the parent session was revoked."""
     if token_type == "access":
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_ACCESS_EXPIRE_MINUTES)
     else:
         expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_EXPIRE_DAYS)
 
-    return jwt.encode(
-        {"sub": str(staff_id), "type": token_type, "exp": expire},
-        settings.JWT_SECRET,
-        algorithm=ALGORITHM,
-    )
+    payload = {"sub": str(staff_id), "type": token_type, "exp": expire}
+    if pf_sid:
+        payload["pf_sid"] = str(pf_sid)
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=ALGORITHM)
+
+
+async def _is_pf_session_revoked(pf_sid: str) -> bool:
+    """Check the Redis blacklist populated by PostForge's revoke webhook
+    (POST /api/internal/invalidate-sessions). Fail-open on Redis outage —
+    the CRM JWT's short TTL is the ultimate backstop."""
+    if not pf_sid:
+        return False
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        try:
+            return bool(await r.get(f"pf_sess_revoked:{pf_sid}"))
+        finally:
+            await r.aclose()
+    except Exception as e:
+        logger.debug("pf_sess_revoked lookup failed: %s", e)
+        return False
 
 
 def decode_token(token: str) -> dict:
@@ -62,6 +85,15 @@ async def get_current_user(
     payload = decode_token(credentials.credentials)
     if payload.get("type") != "access":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token type")
+
+    # If the token carries a PostForge session id, reject it whenever that
+    # parent session has been revoked. PostForge pushes a webhook to CRM
+    # on logout / explicit revoke / password change / cookie-theft detect
+    # — we cache the flag in Redis with TTL = max(30m, refresh lifetime),
+    # so the check is O(1) and doesn't chat back to PostForge.
+    pf_sid = payload.get("pf_sid")
+    if pf_sid and await _is_pf_session_revoked(pf_sid):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Parent session revoked")
 
     staff_id = payload.get("sub")
     result = await db.execute(select(Staff).where(Staff.id == staff_id, Staff.is_active.is_(True)))
