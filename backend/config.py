@@ -12,7 +12,11 @@ class Settings(BaseSettings):
 
     # JWT — required, no insecure default. Validated below at startup.
     JWT_SECRET: str = ""
-    JWT_ACCESS_EXPIRE_MINUTES: int = 480  # 8 hours
+    # Short-ish access TTL so that if PostForge's revoke webhook is ever
+    # dropped (network blip, CRM restart), the window for replay of a
+    # stolen CRM JWT is bounded. Frontend silently refreshes so users
+    # don't feel it.
+    JWT_ACCESS_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_EXPIRE_DAYS: int = 30
 
     # Encryption — required for at-rest contact + session encryption
