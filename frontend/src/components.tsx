@@ -71,6 +71,17 @@ function IconLogout({ className = "w-5 h-5" }: { className?: string }) {
   );
 }
 
+// Chevron-left inside a rounded square — used for the "back to Metra"
+// shortcut in the mobile bottom-nav so users who entered CRM from the
+// PostForge dashboard have a one-tap way out.
+function IconBackHome({ className = "w-5 h-5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="15 6 9 12 15 18" />
+    </svg>
+  );
+}
+
 // ============================================================
 // Auth Guard
 // ============================================================
@@ -252,6 +263,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Bottom nav */}
       <nav className={`${isTg ? "" : "md:hidden"} ${isEmbedded && !isTg ? "hidden md:hidden" : ""} fixed bottom-0 left-0 right-0 bg-surface-card border-t border-surface-border flex justify-around z-50`} style={{ height: 60 }} id="bottom-nav">
+        {/* Back-to-Metra shortcut — only for non-TG users (TG has its
+            own BackButton in the top-bar). Desktop has a dedicated
+            "Обратно в дашборд" button in the sidebar instead. */}
+        {!isTg && (
+          <button
+            onClick={() => { if (dashLoading) return; setDashLoading(true); window.location.href = "https://metra-ai.org"; }}
+            disabled={dashLoading}
+            className={`flex flex-col items-center gap-0.5 text-[11px] transition-colors min-w-[52px] h-full justify-center pt-1 text-emerald-400 ${dashLoading ? 'opacity-50 pointer-events-none' : ''}`}
+            aria-label="Обратно в Metra"
+          >
+            {dashLoading ? (
+              <div className="w-5 h-5 border-2 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" />
+            ) : (
+              <IconBackHome className="w-6 h-6" />
+            )}
+            METRA
+          </button>
+        )}
         {navItems.map((item) => {
           const Icon = item.icon;
           const active = pathname.startsWith(item.href);
