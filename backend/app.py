@@ -1234,7 +1234,17 @@ async def sso_auth(req: SsoAuthRequest, request: Request, db: DB):
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 f"{settings.POSTFORGE_API_URL}/api/me",
-                headers={"Authorization": f"Bearer {req.postforge_token}"},
+                headers={
+                    "Authorization": f"Bearer {req.postforge_token}",
+                    # Tell PostForge this is a trusted service-to-service
+                    # call — it validates the JWT + session liveness but
+                    # skips the per-request fingerprint/country binding
+                    # check. Without this our origin IP/UA fails that
+                    # match and PostForge revokes the user's session on
+                    # every CRM iframe load (symptom: users can't open
+                    # CRM, 401 on /api/auth/sso).
+                    "X-Service-Bot": settings.POSTFORGE_BOT_SECRET or "",
+                },
             )
         if resp.status_code != 200:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid PostForge token")
