@@ -270,9 +270,12 @@ async def _postforge_funnel_stage_update(
     if not settings.POSTFORGE_API_URL or not settings.POSTFORGE_BOT_SECRET:
         return
     import httpx
+    # Use the internal/service-bot endpoint, not the user-facing one — the
+    # internal variant accepts `Authorization: Bot <BACKEND_BOT_SECRET>` and
+    # skips the JWT/permission machinery that the UI version requires.
     url = (
         f"{settings.POSTFORGE_API_URL.rstrip('/')}"
-        f"/api/traffic/campaigns/{campaign_id}/subscribers/{telegram_user_id}/funnel-stage"
+        f"/api/internal/traffic/campaigns/{campaign_id}/subscribers/{telegram_user_id}/funnel-stage"
     )
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
