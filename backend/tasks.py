@@ -4,7 +4,7 @@ All long-running asyncio tasks:
 - auto_sync_on_startup: sync TG dialogs on startup
 - process_scheduled_messages: send due scheduled messages every 30s
 - telethon_health_monitor: check Telethon connections every 60s
-- periodic_sync: re-sync dialogs + check listeners every 2 hours
+- periodic_sync: re-sync dialogs + check listeners every 30 minutes
 - cleanup_old_media: delete old media files daily
 - cleanup_disconnected_accounts: purge data for accounts disconnected >30 days
 """
@@ -105,12 +105,39 @@ async def process_scheduled_messages():
 
 
 async def telethon_health_monitor():
-    """Check Telethon client connections every 60s, reconnect if needed."""
+    """Check Telethon client liveness every 60s, reconnect if needed.
+
+    Two failure modes are covered:
+      1. TCP-level disconnect — client.is_connected() returns False.
+         Straightforward, force _try_reconnect.
+      2. Silent handler death — socket stays alive but Telegram stops
+         delivering events (observed after long idle periods or
+         transient server issues). client.is_connected() lies. We
+         detect this by sending a cheap GetState ping; if it times
+         out or raises, the session is stale even if the socket
+         isn't. Force a reconnect, which re-registers all event
+         handlers and resyncs update state.
+    """
+    from telethon.tl.functions.updates import GetStateRequest
     await asyncio.sleep(30)
     while True:
         try:
             for account_id, client in list(_clients.items()):
-                if not client.is_connected():
+                # Path 1: TCP/socket-level check.
+                disconnected = not client.is_connected()
+
+                # Path 2: application-level liveness ping. Only run when
+                # socket claims connected — otherwise the reconnect below
+                # handles it anyway.
+                if not disconnected:
+                    try:
+                        await asyncio.wait_for(client(GetStateRequest()), timeout=15)
+                    except Exception as e:
+                        disconnected = True
+                        print(f"[HEALTH] keepalive ping failed for {account_id}: "
+                              f"{type(e).__name__}: {e} — treating as disconnected")
+
+                if disconnected:
                     async with async_session() as db:
                         result = await db.execute(
                             select(TgAccount).where(
@@ -161,7 +188,15 @@ async def periodic_sync():
     Telegram server issues, or network hiccups).
     Also checks that listeners are actually running and restarts them if not.
     """
-    SYNC_INTERVAL = 2 * 60 * 60  # 2 hours
+    # 30 min instead of 2h — Davide reported new chats / pin changes
+    # taking hours to appear in CRM. The listener catches most events
+    # in real time but can silently desync (see telethon_health_monitor
+    # for the keepalive that detects handler death), and pin bulk
+    # reorders don't always broadcast. A tighter catch-up makes these
+    # edge cases recover in minutes instead of hours. 50 accounts × 100
+    # dialogs × every 30 min ≈ 2.8 dialog-fetches/sec amortized, well
+    # within Telegram's limits and leaves DB headroom.
+    SYNC_INTERVAL = 30 * 60  # 30 min
     await asyncio.sleep(120)  # Wait 2 min after startup (auto_sync already runs)
     while True:
         try:

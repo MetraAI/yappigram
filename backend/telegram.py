@@ -22,6 +22,8 @@ def _safe_handler(func):
     return wrapper
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import GetBotCallbackAnswerRequest, GetAllDraftsRequest
+from telethon.tl.functions.updates import GetStateRequest
+from telethon.tl.types import UpdateDialogPinned, UpdatePinnedDialogs
 
 from config import settings
 from crypto import encrypt, encrypt_session, decrypt_session, is_session_encrypted
@@ -1177,6 +1179,76 @@ async def _start_listener(account: TgAccount, client: TelegramClient) -> None:
                         "contact_id": str(msg.contact_id),
                         "message_id": str(msg.id),
                     }, org_id=account.org_id)
+
+    # Mirror pin-state changes from native Telegram into CRM in real time.
+    # Previously the only path was _do_sync_dialogs (periodic, every 2h),
+    # so pinning a chat on your phone didn't show in CRM until the next
+    # full sync. UpdateDialogPinned fires for a single-chat toggle;
+    # UpdatePinnedDialogs fires on a bulk reorder that ships the whole
+    # pinned list. Handle both.
+    @client.on(events.Raw([UpdateDialogPinned, UpdatePinnedDialogs]))
+    @_safe_handler
+    async def on_pin_changed(event):
+        if isinstance(event, UpdateDialogPinned):
+            # Single-chat pin/unpin. `peer` may be a PeerUser / PeerChat /
+            # PeerChannel; normalize via the same helpers Telethon uses.
+            peer = getattr(event, "peer", None)
+            peer_id = None
+            if peer is not None:
+                inner = getattr(peer, "peer", peer)  # DialogPeer.peer
+                if hasattr(inner, "user_id"):
+                    peer_id = inner.user_id
+                elif hasattr(inner, "chat_id"):
+                    peer_id = -inner.chat_id
+                elif hasattr(inner, "channel_id"):
+                    peer_id = -1_000_000_000_000 - inner.channel_id
+            if peer_id is None:
+                return
+            is_pinned = bool(getattr(event, "pinned", False))
+            async with async_session() as db:
+                res = await db.execute(
+                    select(Contact).where(
+                        Contact.tg_account_id == account.id,
+                        Contact.real_tg_id == peer_id,
+                    ).limit(1)
+                )
+                contact = res.scalar_one_or_none()
+                if contact and contact.is_pinned != is_pinned:
+                    contact.is_pinned = is_pinned
+                    await db.commit()
+                    print(f"[PIN] {account.phone} {peer_id} pinned={is_pinned}")
+
+        elif isinstance(event, UpdatePinnedDialogs):
+            # Bulk reorder: `order` is the full new pinned list (or None to
+            # mean "look it up yourself"). Easiest correctness: mirror by
+            # unpinning everything for this account then re-pinning the
+            # set named in `order`.
+            order = getattr(event, "order", None) or []
+            new_ids: set[int] = set()
+            for dp in order:
+                inner = getattr(dp, "peer", dp)
+                if hasattr(inner, "user_id"):
+                    new_ids.add(inner.user_id)
+                elif hasattr(inner, "chat_id"):
+                    new_ids.add(-inner.chat_id)
+                elif hasattr(inner, "channel_id"):
+                    new_ids.add(-1_000_000_000_000 - inner.channel_id)
+            async with async_session() as db:
+                res = await db.execute(
+                    select(Contact).where(
+                        Contact.tg_account_id == account.id,
+                    )
+                )
+                contacts = list(res.scalars().all())
+                changed = 0
+                for c in contacts:
+                    should_be = c.real_tg_id in new_ids
+                    if c.is_pinned != should_be:
+                        c.is_pinned = should_be
+                        changed += 1
+                if changed:
+                    await db.commit()
+                    print(f"[PIN] {account.phone} bulk reorder: {changed} contacts updated")
 
     # Run client in background with auto-reconnect and exponential backoff
     _account_status[account.id] = "connected"
