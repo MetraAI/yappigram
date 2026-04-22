@@ -1267,6 +1267,14 @@ function ChatsContent() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   useEffect(() => {
     if (!selected) return;
+    // Capture the id at effect start. Any async resolution that comes back
+    // AFTER the user switched to another chat must be discarded, otherwise
+    // old chat's messages overwrite the new chat's (race reported in prod
+    // — supergroup msgs bleeding into a DM view after nav).
+    const chatId = selected.id;
+    let aborted = false;
+    const controller = new AbortController();
+
     setActiveTopic(null);
     setTopics([]);
     setMessages([]);
@@ -1277,49 +1285,74 @@ function ChatsContent() {
       if (aId && bId) return aId - bId;
       return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     });
-    api(`/api/messages/${selected.id}?limit=200`).then((msgs: Message[]) => {
+    api(`/api/messages/${chatId}?limit=200`, { signal: controller.signal }).then((msgs: Message[]) => {
+      if (aborted) return;
       setMessages(sortMsgs(msgs));
       setTimeout(() => virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" }), 100);
       // Auto-download missing media in background
       // Always check — backend verifies which files actually exist on disk
       const hasMedia = msgs.some((m: any) => m.media_type && m.media_type !== "sticker");
       if (hasMedia) {
-        api(`/api/messages/${selected.id}/download-missing-media`, { method: "POST" })
+        api(`/api/messages/${chatId}/download-missing-media`, { method: "POST", signal: controller.signal })
           .then((res: any) => {
+            if (aborted) return;
             if (res?.downloaded > 0) {
               // Reload messages to show downloaded media
-              api(`/api/messages/${selected.id}?limit=200`).then((fresh: Message[]) => {
+              api(`/api/messages/${chatId}?limit=200`, { signal: controller.signal }).then((fresh: Message[]) => {
+                if (aborted) return;
                 setMessages(sortMsgs(fresh));
               }).catch(() => {});
             }
           }).catch(() => {});
       }
-    }).catch(console.error).finally(() => setLoadingMessages(false));
+    }).catch((e) => { if (e?.name !== 'AbortError') console.error(e); }).finally(() => {
+      if (!aborted) setLoadingMessages(false);
+    });
     if (selected.is_forum) {
-      api(`/api/messages/${selected.id}/topics`).then(setTopics).catch(console.error);
+      api(`/api/messages/${chatId}/topics`, { signal: controller.signal })
+        .then((t) => { if (!aborted) setTopics(t); })
+        .catch((e) => { if (e?.name !== 'AbortError') console.error(e); });
     }
     setReplyTo(null);
     // Load draft into input if exists
-    const draft = drafts.get(selected.id);
+    const draft = drafts.get(chatId);
     setText(draft || "");
     setForwardMode(false);
     setForwardSelected(new Set());
     setShowUserInfo(false);
     setContactNotes(selected?.notes || "");
-    setUnread((prev) => { const n = new Map(prev); n.delete(selected.id); return n; });
-    api(`/api/messages/${selected.id}/read`, { method: "PATCH" }).catch(console.error);
+    setUnread((prev) => { const n = new Map(prev); n.delete(chatId); return n; });
+    api(`/api/messages/${chatId}/read`, { method: "PATCH", signal: controller.signal })
+      .catch((e) => { if (e?.name !== 'AbortError') console.error(e); });
+
+    return () => {
+      aborted = true;
+      controller.abort();
+    };
   }, [selected]);
 
 
   // Reload messages when topic filter changes
   useEffect(() => {
     if (!selected) return;
+    const chatId = selected.id;
+    let aborted = false;
+    const controller = new AbortController();
+
     setLoadingTopic(true);
     const topicParam = activeTopic !== null ? `&topic_id=${activeTopic}` : "";
-    api(`/api/messages/${selected.id}?limit=200${topicParam}`).then((msgs: Message[]) => {
+    api(`/api/messages/${chatId}?limit=200${topicParam}`, { signal: controller.signal }).then((msgs: Message[]) => {
+      if (aborted) return;
       setMessages(sortMsgs(msgs));
       setTimeout(() => virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" }), 100);
-    }).catch(console.error).finally(() => setLoadingTopic(false));
+    }).catch((e) => { if (e?.name !== 'AbortError') console.error(e); }).finally(() => {
+      if (!aborted) setLoadingTopic(false);
+    });
+
+    return () => {
+      aborted = true;
+      controller.abort();
+    };
   }, [activeTopic]);
 
   // Message polling: only when WS is down
