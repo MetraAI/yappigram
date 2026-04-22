@@ -1623,6 +1623,25 @@ async def startup_listeners() -> None:
                         print(f"[STARTUP] Could not fetch display_name for {account.phone}: {e2}")
                 await _start_listener(account, client)
                 print(f"[STARTUP] Listener started for {account.phone}")
+                # Kick off a dialog + history sync for this account right
+                # now, while we know the client is already in _clients.
+                # The generic auto_sync_on_startup task in tasks.py does
+                # the same thing but after a fixed 3-second sleep — when
+                # startup_listeners is slow (session migration, display
+                # name fetch, large account count), that task hits
+                # _clients.get(...) before this loop has populated the
+                # dict and silently exits with "not connected, skipping".
+                # Triggering per-account here removes the race entirely.
+                # _do_sync_dialogs is idempotent — re-running the same
+                # account is cheap.
+                async def _kick_sync(acc_id: UUID, phone: str) -> None:
+                    try:
+                        from app import _do_sync_dialogs
+                        imported = await _do_sync_dialogs(acc_id, None)
+                        print(f"[STARTUP-SYNC] {phone}: imported {imported} new dialogs")
+                    except Exception as e_sync:
+                        print(f"[STARTUP-SYNC] {phone}: error: {e_sync}")
+                asyncio.create_task(_kick_sync(account.id, account.phone))
             else:
                 print(f"[STARTUP] {account.phone} NOT authorized, skipping")
         except Exception as e:
