@@ -6082,6 +6082,77 @@ async def internal_user_crm_info(
     }
 
 
+@app.get("/api/internal/tg-accounts")
+async def internal_list_tg_accounts(
+    db: DB,
+    postforge_user_id: str,
+    only_active: bool = True,
+    _: None = Depends(_verify_bot_secret),
+):
+    """Flat list of CRM TG accounts a PostForge user can bind to a campaign.
+
+    PostForge calls this when rendering the "Link CRM personal account"
+    dropdown in the Edit Campaign modal. The scoping rule mirrors
+    /api/internal/user-crm-info — admins see all org accounts, operators
+    only their assigned ones — but the result is a flat deduplicated
+    list instead of per-org profiles, because the dropdown doesn't care
+    about org context, only whether the account is bindable.
+
+    If the user has no active Staff rows, returns an empty list instead
+    of 404 — PostForge renders "No CRM accounts available" rather than
+    an error toast (solo users who never joined a CRM team).
+    """
+    staff_result = await db.execute(
+        select(Staff).where(
+            Staff.postforge_user_id == postforge_user_id,
+            Staff.is_active.is_(True),
+        )
+    )
+    staff_rows = list(staff_result.scalars().all())
+    if not staff_rows:
+        return {"accounts": []}
+
+    # Dedupe across org contexts — same account_id shouldn't show twice
+    # if somehow the user has staff rows in two orgs sharing accounts
+    # (shouldn't happen today but cheap to guard against).
+    seen: set[str] = set()
+    out: list[dict] = []
+
+    for s in staff_rows:
+        org_id = s.postforge_org_id or "unknown"
+        if s.role in ("super_admin", "admin"):
+            q = select(TgAccount).where(TgAccount.org_id == org_id)
+        else:
+            assigned_subq = (
+                select(StaffTgAccount.tg_account_id)
+                .where(StaffTgAccount.staff_id == s.id)
+                .subquery()
+            )
+            q = select(TgAccount).where(TgAccount.id.in_(select(assigned_subq)))
+
+        if only_active:
+            q = q.where(TgAccount.is_active.is_(True))
+
+        q = q.order_by(TgAccount.connected_at.desc())
+        acct_result = await db.execute(q)
+
+        for a in acct_result.scalars().all():
+            aid = str(a.id)
+            if aid in seen:
+                continue
+            seen.add(aid)
+            out.append({
+                "id": aid,
+                "phone": a.phone,
+                "display_name": a.display_name,
+                "is_active": bool(a.is_active),
+                "connected_at": a.connected_at.isoformat() if a.connected_at else None,
+                "org_id": org_id,
+            })
+
+    return {"accounts": out}
+
+
 @app.get("/api/internal/stats")
 async def internal_stats(
     db: DB,
