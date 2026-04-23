@@ -46,10 +46,21 @@ function BroadcastsContent() {
   const [selectedAccount, setSelectedAccount] = useState("");
   const [recipientMode, setRecipientMode] = useState<RecipientMode>("all");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  // Exclude list — contacts with any of these tags are dropped at send time.
+  // Kept mutually exclusive with selectedTags in the UI: picking a tag as
+  // "exclude" auto-removes it from "include" and vice versa.
+  const [excludedTags, setExcludedTags] = useState<string[]>([]);
+  // In tags mode, flip this on to cherry-pick contacts FROM within the
+  // tag-filtered set instead of sending to everyone matching the tags.
+  const [cherryPick, setCherryPick] = useState(false);
   const [maxRecipients, setMaxRecipients] = useState(20);
   const [manualContacts, setManualContacts] = useState<Set<string>>(new Set());
   const [contactSearch, setContactSearch] = useState("");
-  const [delay, setDelay] = useState(1);
+  // Minimum delay raised from 1s to 5s: with the per-account flood cap
+  // already sitting at ~1 msg/sec, a 1s user delay meant every broadcast
+  // ran right at the ban threshold. 5s gives real headroom.
+  const BROADCAST_MIN_DELAY = 5;
+  const [delay, setDelay] = useState(BROADCAST_MIN_DELAY);
   const [creating, setCreating] = useState(false);
   const [editingBroadcast, setEditingBroadcast] = useState<Broadcast | null>(null);
 
@@ -93,14 +104,24 @@ function BroadcastsContent() {
     if (!title.trim() || !selectedAccount) return;
     setCreating(true);
     try {
+      // In tags mode with cherryPick toggled on, we stuff the user's
+      // picks into contact_ids and leave tag_filter on as a belt-and-
+      // braces safety net (server will intersect). Without cherryPick,
+      // contact_ids stays empty → server falls back to tag_filter alone.
+      // Manual mode is unchanged: pure contact_ids, no tag_filter.
+      // Cherry-pick requires at least one include tag actually selected —
+      // otherwise the UI block is hidden and the user's old picks would
+      // get silently submitted as a manual-mode broadcast.
+      const useCherryPick = recipientMode === "tags" && cherryPick && manualContacts.size > 0 && selectedTags.length > 0;
       let bc = await createBroadcast({
         title: title.trim(),
         content: content.trim() || undefined,
         tg_account_id: selectedAccount,
         tag_filter: (recipientMode === "tags" || recipientMode === "random") ? selectedTags : [],
-        delay_seconds: delay,
+        tag_exclude: recipientMode === "all" ? [] : excludedTags,
+        delay_seconds: Math.max(BROADCAST_MIN_DELAY, delay),
         max_recipients: (recipientMode === "random") ? maxRecipients : undefined,
-        contact_ids: recipientMode === "manual" ? Array.from(manualContacts) : [],
+        contact_ids: recipientMode === "manual" || useCherryPick ? Array.from(manualContacts) : [],
       });
       // Upload media if selected
       if (mediaFile) {
@@ -117,8 +138,10 @@ function BroadcastsContent() {
       }
       setBroadcasts((prev) => [bc, ...prev]);
       setShowCreate(false);
-      setTitle(""); setContent(""); setSelectedTags([]); setManualContacts(new Set());
+      setTitle(""); setContent(""); setSelectedTags([]); setExcludedTags([]);
+      setManualContacts(new Set()); setCherryPick(false);
       setRecipientMode("all"); setMediaFile(null); setSendAs("auto"); setUploadedMedia(null);
+      setDelay(BROADCAST_MIN_DELAY);
     } catch (e: any) { alert(e.message); }
     setCreating(false);
   };
@@ -158,13 +181,33 @@ function BroadcastsContent() {
     setContent(bc.content || "");
     setSelectedAccount(bc.tg_account_id);
     setSelectedTags(bc.tag_filter || []);
-    setDelay(bc.delay_seconds);
+    setExcludedTags(bc.tag_exclude || []);
+    // Clamp: any grandfathered draft saved with delay < 5 gets bumped
+    // to the new floor when reopened for editing.
+    setDelay(Math.max(BROADCAST_MIN_DELAY, bc.delay_seconds));
     setMaxRecipients(bc.max_recipients || 20);
     setManualContacts(new Set(bc.contact_ids || []));
-    if (bc.contact_ids?.length) setRecipientMode("manual");
-    else if (bc.max_recipients) setRecipientMode("random");
-    else if (bc.tag_filter?.length) setRecipientMode("tags");
-    else setRecipientMode("all");
+    // A broadcast with BOTH tag_filter AND contact_ids was saved in
+    // "tags + cherry-pick" mode. Restore that instead of downgrading
+    // to plain manual.
+    const hasTags = (bc.tag_filter?.length ?? 0) > 0;
+    const hasIds = (bc.contact_ids?.length ?? 0) > 0;
+    if (hasTags && hasIds) {
+      setRecipientMode("tags");
+      setCherryPick(true);
+    } else if (hasIds) {
+      setRecipientMode("manual");
+      setCherryPick(false);
+    } else if (bc.max_recipients) {
+      setRecipientMode("random");
+      setCherryPick(false);
+    } else if (hasTags) {
+      setRecipientMode("tags");
+      setCherryPick(false);
+    } else {
+      setRecipientMode("all");
+      setCherryPick(false);
+    }
     setShowCreate(true);
   };
 
@@ -172,6 +215,10 @@ function BroadcastsContent() {
     if (!editingBroadcast || !title.trim() || !selectedAccount) return;
     setCreating(true);
     try {
+      // Cherry-pick requires at least one include tag actually selected —
+      // otherwise the UI block is hidden and the user's old picks would
+      // get silently submitted as a manual-mode broadcast.
+      const useCherryPick = recipientMode === "tags" && cherryPick && manualContacts.size > 0 && selectedTags.length > 0;
       const updated = await api(`/api/broadcasts/${editingBroadcast.id}`, {
         method: "PATCH",
         body: JSON.stringify({
@@ -179,15 +226,17 @@ function BroadcastsContent() {
           content: content.trim() || null,
           tg_account_id: selectedAccount,
           tag_filter: (recipientMode === "tags" || recipientMode === "random") ? selectedTags : [],
-          delay_seconds: delay,
+          tag_exclude: recipientMode === "all" ? [] : excludedTags,
+          delay_seconds: Math.max(BROADCAST_MIN_DELAY, delay),
           max_recipients: recipientMode === "random" ? maxRecipients : null,
-          contact_ids: recipientMode === "manual" ? Array.from(manualContacts) : [],
+          contact_ids: recipientMode === "manual" || useCherryPick ? Array.from(manualContacts) : [],
         }),
       });
       setBroadcasts((prev) => prev.map((bc) => (bc.id === editingBroadcast.id ? updated : bc)));
       setShowCreate(false);
       setEditingBroadcast(null);
-      setTitle(""); setContent(""); setSelectedTags([]); setManualContacts(new Set());
+      setTitle(""); setContent(""); setSelectedTags([]); setExcludedTags([]);
+      setManualContacts(new Set()); setCherryPick(false);
     } catch (e: any) { alert(e.message); }
     setCreating(false);
   };
@@ -307,30 +356,138 @@ function BroadcastsContent() {
             </div>
           </div>
 
-          {/* Tag filter (for tags & random modes) */}
+          {/* Tag INCLUDE filter (for tags & random modes) */}
           {(recipientMode === "tags" || recipientMode === "random") && tags.length > 0 && (
             <div>
               <label className="text-sm text-slate-400 font-medium block mb-1.5">
                 Фильтр по тегам {recipientMode === "tags" ? "(пусто = все)" : ""}
               </label>
               <div className="flex flex-wrap gap-1.5">
-                {tags.map((tag) => (
-                  <button key={tag.id}
-                    onClick={() => setSelectedTags((prev) =>
-                      prev.includes(tag.name) ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
-                    )}
-                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
-                      selectedTags.includes(tag.name)
-                        ? "border-transparent shadow-sm"
-                        : "border-surface-border opacity-50 hover:opacity-80"
-                    }`}
-                    style={{ backgroundColor: tag.color + "25", color: tag.color, borderColor: selectedTags.includes(tag.name) ? tag.color + "40" : undefined }}>
-                    {selectedTags.includes(tag.name) ? "✓ " : ""}{tag.name}
-                  </button>
-                ))}
+                {tags.map((tag) => {
+                  const isIncluded = selectedTags.includes(tag.name);
+                  return (
+                    <button key={tag.id}
+                      onClick={() => {
+                        // Clicking a tag for INCLUDE auto-pulls it out of EXCLUDE
+                        // so the two lists stay disjoint.
+                        setExcludedTags((prev) => prev.filter((t) => t !== tag.name));
+                        setSelectedTags((prev) =>
+                          prev.includes(tag.name) ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
+                        );
+                      }}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
+                        isIncluded
+                          ? "border-transparent shadow-sm"
+                          : "border-surface-border opacity-50 hover:opacity-80"
+                      }`}
+                      style={{ backgroundColor: tag.color + "25", color: tag.color, borderColor: isIncluded ? tag.color + "40" : undefined }}>
+                      {isIncluded ? "✓ " : ""}{tag.name}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
+
+          {/* Tag EXCLUDE filter — available in any mode except "all".
+              Contacts carrying ANY of these tags are dropped at send time,
+              even if they got through the include filter or manual pick. */}
+          {recipientMode !== "all" && tags.length > 0 && (
+            <div>
+              <label className="text-sm text-slate-400 font-medium block mb-1.5">
+                Исключить теги <span className="text-slate-500 font-normal">(люди с этими тегами не получат рассылку)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {tags.map((tag) => {
+                  const isExcluded = excludedTags.includes(tag.name);
+                  return (
+                    <button key={tag.id}
+                      onClick={() => {
+                        // Clicking a tag for EXCLUDE auto-pulls it from INCLUDE.
+                        setSelectedTags((prev) => prev.filter((t) => t !== tag.name));
+                        setExcludedTags((prev) =>
+                          prev.includes(tag.name) ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
+                        );
+                      }}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
+                        isExcluded
+                          ? "border-red-500/40 bg-red-500/10 text-red-400"
+                          : "border-surface-border text-slate-400 opacity-70 hover:opacity-100"
+                      }`}>
+                      {isExcluded ? "✗ " : ""}{tag.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Cherry-pick toggle — in tags mode, lets the user pick individual
+              contacts out of the tag-matching set instead of sending to all. */}
+          {recipientMode === "tags" && selectedTags.length > 0 && (() => {
+            const matchingContacts = privateContacts.filter((c) =>
+              c.tags?.some((t) => selectedTags.includes(t)) &&
+              !c.tags?.some((t) => excludedTags.includes(t))
+            );
+            const filtered = matchingContacts.filter((c) =>
+              !contactSearch || c.alias.toLowerCase().includes(contactSearch.toLowerCase())
+            );
+            return (
+              <div>
+                <label className="flex items-center gap-2 text-sm text-slate-400 font-medium mb-1.5 cursor-pointer select-none">
+                  <input type="checkbox" checked={cherryPick}
+                    onChange={(e) => setCherryPick(e.target.checked)}
+                    className="accent-brand" />
+                  Выбрать выборочно из этих контактов ({matchingContacts.length} подходит)
+                </label>
+                {cherryPick && (
+                  <>
+                    <div className="flex items-center gap-2 mb-2">
+                      <input type="text" value={contactSearch} onChange={(e) => setContactSearch(e.target.value)}
+                        placeholder="Поиск контактов..."
+                        className="flex-1 bg-surface border border-surface-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand/50" />
+                      <button type="button"
+                        onClick={() => {
+                          // Toggle select-all within the currently filtered view.
+                          const filteredIds = filtered.map((c) => c.id);
+                          const allSelected = filteredIds.every((id) => manualContacts.has(id));
+                          setManualContacts((prev) => {
+                            const next = new Set(prev);
+                            if (allSelected) filteredIds.forEach((id) => next.delete(id));
+                            else filteredIds.forEach((id) => next.add(id));
+                            return next;
+                          });
+                        }}
+                        className="text-[11px] px-2 py-1 rounded-lg border border-surface-border text-slate-400 hover:border-slate-500 whitespace-nowrap">
+                        {filtered.every((c) => manualContacts.has(c.id)) && filtered.length > 0 ? "Снять всё" : "Выбрать всё"}
+                      </button>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1 border border-surface-border rounded-xl p-2">
+                      {filtered.map((c) => (
+                        <label key={c.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-hover cursor-pointer">
+                          <input type="checkbox" checked={manualContacts.has(c.id)}
+                            onChange={() => setManualContacts((prev) => {
+                              const next = new Set(prev);
+                              next.has(c.id) ? next.delete(c.id) : next.add(c.id);
+                              return next;
+                            })}
+                            className="accent-brand" />
+                          <span className="text-sm">{c.alias}</span>
+                          {c.tags?.length > 0 && (
+                            <span className="text-[10px] text-slate-500">{c.tags.join(", ")}</span>
+                          )}
+                        </label>
+                      ))}
+                      {filtered.length === 0 && (
+                        <p className="text-xs text-slate-500 text-center py-2">Нет подходящих контактов</p>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1">Выбрано: {manualContacts.size}</p>
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Max recipients (random mode) */}
           {recipientMode === "random" && (
@@ -379,22 +536,32 @@ function BroadcastsContent() {
             </div>
           )}
 
-          {/* Delay slider */}
+          {/* Delay slider — minimum raised to 5s (anti-flood floor). */}
           <div>
             <label className="text-sm text-slate-400 font-medium block mb-1.5">
               Задержка: {delay >= 60 ? `${Math.floor(delay / 60)} мин ${delay % 60 ? delay % 60 + " сек" : ""}` : `${delay} сек`}
             </label>
-            <input type="range" min={1} max={3600} value={delay}
+            <input type="range" min={BROADCAST_MIN_DELAY} max={3600} value={Math.max(BROADCAST_MIN_DELAY, delay)}
               onChange={(e) => setDelay(Number(e.target.value))} className="w-full accent-brand" />
             <div className="flex justify-between text-[10px] text-slate-500 mt-1">
-              <span>1 сек</span><span>60 мин</span>
+              <span>{BROADCAST_MIN_DELAY} сек</span><span>60 мин</span>
             </div>
+            <p className="text-[10px] text-slate-500 mt-1">
+              Минимум 5 секунд — чтобы Telegram не словил flood-ban на аккаунт.
+            </p>
           </div>
 
           <div className="flex gap-2 justify-end">
-            <Button variant="ghost" onClick={() => { setShowCreate(false); setEditingBroadcast(null); setTitle(""); setContent(""); }}>Отмена</Button>
+            <Button variant="ghost" onClick={() => {
+              setShowCreate(false); setEditingBroadcast(null);
+              setTitle(""); setContent("");
+              setSelectedTags([]); setExcludedTags([]); setManualContacts(new Set());
+              setCherryPick(false); setRecipientMode("all");
+              setDelay(BROADCAST_MIN_DELAY); setMediaFile(null); setSendAs("auto"); setUploadedMedia(null);
+            }}>Отмена</Button>
             <Button onClick={editingBroadcast ? handleSaveEdit : handleCreate} disabled={creating || !title.trim() || !selectedAccount ||
-              (recipientMode === "manual" && manualContacts.size === 0)}>
+              (recipientMode === "manual" && manualContacts.size === 0) ||
+              (recipientMode === "tags" && cherryPick && manualContacts.size === 0)}>
               {creating ? "Сохранение..." : editingBroadcast ? "Сохранить" : "Создать"}
             </Button>
           </div>
@@ -457,10 +624,17 @@ function BroadcastsContent() {
                   </div>
                 </div>
               )}
-              {bc.tag_filter.length > 0 && (
-                <div className="flex gap-1 mt-2">
+              {(bc.tag_filter.length > 0 || (bc.tag_exclude?.length ?? 0) > 0) && (
+                <div className="flex gap-1 mt-2 flex-wrap">
                   {bc.tag_filter.map((t) => (
-                    <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-slate-400">{t}</span>
+                    <span key={`inc-${t}`} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-slate-400">
+                      {t}
+                    </span>
+                  ))}
+                  {(bc.tag_exclude || []).map((t) => (
+                    <span key={`exc-${t}`} className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400">
+                      ✗ {t}
+                    </span>
                   ))}
                 </div>
               )}

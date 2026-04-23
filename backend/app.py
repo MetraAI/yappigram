@@ -879,6 +879,11 @@ async def on_startup():
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS max_recipients INTEGER;
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS contact_ids UUID[] DEFAULT '{}';
                 ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS last_error TEXT;
+                -- Exclude list: contacts with ANY of these tags are filtered out
+                -- of the recipient set, applied AFTER include/manual selection as
+                -- defense-in-depth ("I excluded RD but accidentally ticked a
+                -- contact with RD — server should still drop them").
+                ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS tag_exclude TEXT[] DEFAULT '{}';
                 -- org_id columns for multi-tenancy
                 ALTER TABLE tg_accounts ADD COLUMN IF NOT EXISTS org_id VARCHAR;
                 ALTER TABLE tags ADD COLUMN IF NOT EXISTS org_id VARCHAR;
@@ -4182,7 +4187,14 @@ async def create_broadcast(req: BroadcastCreate, user: CurrentUser, db: DB):
         content=req.content,
         tg_account_id=req.tg_account_id,
         tag_filter=req.tag_filter,
-        delay_seconds=max(1, min(3600, req.delay_seconds)),
+        tag_exclude=req.tag_exclude or [],
+        # Floor raised from 1s → 5s: with the per-account system throttle
+        # already capped at ~1 msg/sec, a 1-second user delay meant every
+        # broadcast ran right at the Telegram flood threshold. 5 s gives
+        # breathing room and halves the flood-ban risk. Older drafts in
+        # the DB (delay=1..4) are grandfathered — they keep their value
+        # until the user opens them in the editor, which clamps up.
+        delay_seconds=max(5, min(3600, req.delay_seconds)),
         max_recipients=req.max_recipients,
         contact_ids=req.contact_ids or [],
         created_by=user.id,
@@ -4315,9 +4327,19 @@ async def start_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
         Contact.chat_type == "private",
     )
 
+    # tag_exclude is applied in EVERY branch below (manual + tags + all) as
+    # a secondary filter — defends against the "I excluded tag X but still
+    # checked a contact who has tag X" case by dropping them server-side.
+    exclude_clause = (
+        (~Contact.tags.overlap(bc.tag_exclude),)
+        if getattr(bc, "tag_exclude", None)
+        else ()
+    )
+
     if bc.contact_ids:
-        # Manual selection — use specified contacts (private only)
-        # Validate all contact_ids belong to user's org
+        # Manual selection — use specified contacts (private only).
+        # Validate all contact_ids belong to user's org AND don't carry
+        # a tag that was put in the exclude list.
         result = await db.execute(
             select(Contact).where(
                 Contact.id.in_(bc.contact_ids),
@@ -4325,6 +4347,7 @@ async def start_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
                 *base_filter,
                 Contact.status == "approved",
                 Contact.is_archived.is_(False),
+                *exclude_clause,
             )
         )
         contacts = list(result.scalars().all())
@@ -4333,6 +4356,7 @@ async def start_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
             *base_filter,
             Contact.status == "approved",
             Contact.is_archived.is_(False),
+            *exclude_clause,
         )
         if bc.tag_filter:
             q = q.where(Contact.tags.overlap(bc.tag_filter))
@@ -4355,15 +4379,20 @@ async def start_broadcast(broadcast_id: UUID, user: CurrentUser, db: DB):
             )
         )).scalar_one() or 0
 
+        exclude_note = (
+            f" Исключающие теги: {', '.join(bc.tag_exclude)}."
+            if getattr(bc, "tag_exclude", None)
+            else ""
+        )
         if bc.contact_ids:
             reason = (
                 f"Из {len(bc.contact_ids)} выбранных вручную контактов ни один не подходит "
-                f"(не approved, в архиве, не private или удалён)."
+                f"(не approved, в архиве, не private, удалён или попал под исключающий тег).{exclude_note}"
             )
         elif bc.tag_filter:
             reason = (
                 f"Ни один из {approved_count} активных контактов аккаунта не имеет нужных тегов "
-                f"({', '.join(bc.tag_filter)})."
+                f"({', '.join(bc.tag_filter)}).{exclude_note}"
             )
         elif total_in_account == 0:
             reason = "У этого TG-аккаунта вообще нет контактов. Сначала синхронизируйте диалоги."
@@ -4433,7 +4462,8 @@ async def update_broadcast(broadcast_id: UUID, req: BroadcastCreate, user: Curre
     bc.content = req.content
     bc.tg_account_id = req.tg_account_id
     bc.tag_filter = req.tag_filter
-    bc.delay_seconds = max(1, min(3600, req.delay_seconds))
+    bc.tag_exclude = req.tag_exclude or []
+    bc.delay_seconds = max(5, min(3600, req.delay_seconds))
     bc.max_recipients = req.max_recipients
     bc.contact_ids = req.contact_ids or []
     await db.commit()

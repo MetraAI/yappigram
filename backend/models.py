@@ -336,11 +336,18 @@ class Broadcast(Base):
     # Targeting
     tg_account_id = Column(UUID(as_uuid=True), ForeignKey("tg_accounts.id"), nullable=False)
     tag_filter = Column(ARRAY(String), default=lambda: [])  # only contacts with these tags (empty = all)
+    # Contacts with ANY of these tags are EXCLUDED from recipients.
+    # Applied AFTER tag_filter/contact_ids as a defense-in-depth layer:
+    # even if the user hand-picked someone in a manual selection, if that
+    # contact carries a banned tag they still get dropped at send time.
+    tag_exclude = Column(ARRAY(String), default=lambda: [])
     max_recipients = Column(Integer, nullable=True)  # Random N from filtered set
     contact_ids = Column(ARRAY(UUID(as_uuid=True)), default=lambda: [])  # Manual selection
 
-    # Delay between sends (seconds)
-    delay_seconds = Column(Integer, default=1)  # 1s to 3600s
+    # Delay between sends (seconds). Minimum 5s floor applied at the
+    # create/update handler (not here) so existing rows with older
+    # delay<5 values keep working untouched.
+    delay_seconds = Column(Integer, default=5)
 
     # Status
     status = Column(String, default="draft")  # draft | running | paused | completed | cancelled | failed

@@ -730,6 +730,7 @@ export interface Broadcast {
   media_type: string | null;
   tg_account_id: string;
   tag_filter: string[];
+  tag_exclude: string[];
   max_recipients: number | null;
   contact_ids: string[];
   delay_seconds: number;
@@ -753,6 +754,7 @@ export async function createBroadcast(data: {
   content?: string;
   tg_account_id: string;
   tag_filter?: string[];
+  tag_exclude?: string[];
   delay_seconds?: number;
   max_recipients?: number;
   contact_ids?: string[];

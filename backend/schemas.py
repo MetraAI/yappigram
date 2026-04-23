@@ -277,9 +277,14 @@ class BroadcastCreate(BaseModel):
     content: str | None = Field(None, max_length=10000)
     tg_account_id: UUID
     tag_filter: list[str] = []
-    delay_seconds: int = 1
+    tag_exclude: list[str] = []  # Contacts with ANY of these tags are dropped
+    # No pydantic ge=5 floor — we want old clients sending delay=1..4 to
+    # still save a draft (it gets clamped to 5 at the handler, see
+    # create/update_broadcast). A hard 422 here would break any cached
+    # frontend bundle until it refreshed.
+    delay_seconds: int = 5
     max_recipients: int | None = None  # Random N from filtered set
-    contact_ids: list[UUID] = []  # Manual selection (overrides filters)
+    contact_ids: list[UUID] = []  # Manual selection (still passes tag_exclude filter)
 
 class BroadcastOut(BaseModel):
     id: UUID
@@ -289,6 +294,7 @@ class BroadcastOut(BaseModel):
     media_type: str | None = None
     tg_account_id: UUID
     tag_filter: list[str] = []
+    tag_exclude: list[str] = []
     max_recipients: int | None = None
     delay_seconds: int
     status: str
